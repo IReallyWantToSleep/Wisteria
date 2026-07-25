@@ -1,0 +1,23 @@
+{
+    "schemaVersion": 1,
+    "id": "${mod_id}",
+    "version": "${mod_version}",
+    "name": "${mod_name}",
+    "description": "Frame generation backends for Super Resolution.",
+    "authors": [
+        "${mod_authors}"
+    ],
+    "license": "${mod_license}",
+    "environment": "client",
+    "entrypoints": {
+        "client": [
+            "org.ireallywanttosleep.wisteria.fabric.WisteriaFabricClient"
+        ]
+    },
+    "depends": {
+        "fabricloader": ">=${fabric_loader_version}",
+        "minecraft": [${fabric_mc_range}],
+        "java": ">=${java_version}",
+        "${sr_mod_id}": "*"
+    }
+}
