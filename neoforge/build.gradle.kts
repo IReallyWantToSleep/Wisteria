@@ -35,9 +35,4 @@ tasks.named<Jar>("jar") {
     from(commonMain.output)
 }
 
-tasks.named<ProcessResources>("processResources") {
-    from(commonMain.resources.srcDirs)
-    duplicatesStrategy = DuplicatesStrategy.INCLUDE
-}
-
 // Super Resolution must be present at runtime: place an SR NeoForge jar in run/mods.

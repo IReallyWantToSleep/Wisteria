@@ -9,3 +9,6 @@ out/
 .idea/
 buildSrc/
 build_jars/
+
+# Streamline runtime, copied in from a local SDK checkout by syncStreamlineLibraries.
+common/src/main/resources/streamline/

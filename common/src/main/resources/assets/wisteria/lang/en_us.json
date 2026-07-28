@@ -1,0 +1,7 @@
+{
+  "wisteria.screen.config.special.dlss_fg.backend.name": "DLSS-FG Frame Generation Backend",
+  "wisteria.screen.config.special.dlss_fg.backend.tooltip": "Select the DLSS-FG backend. Auto follows the registered backend priority. Streamline is Windows-only. Changing this option requires a game restart.",
+  "wisteria.screen.config.special.dlss_fg.backend.auto": "Auto",
+  "wisteria.screen.config.special.dlss_fg.backend.streamline": "Streamline",
+  "wisteria.screen.config.special.dlss_fg.backend.ngx": "NVNGX"
+}

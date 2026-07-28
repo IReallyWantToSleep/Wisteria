@@ -3,7 +3,7 @@
     "id": "${mod_id}",
     "version": "${mod_version}",
     "name": "${mod_name}",
-    "description": "Frame generation backends for Super Resolution.",
+    "description": "NVIDIA frame generation and Reflex backends for Super Resolution, plus the Streamline runtime they need.",
     "authors": [
         "${mod_authors}"
     ],

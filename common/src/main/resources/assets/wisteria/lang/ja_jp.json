@@ -1,0 +1,7 @@
+{
+  "wisteria.screen.config.special.dlss_fg.backend.name": "DLSS-FG フレーム生成バックエンド",
+  "wisteria.screen.config.special.dlss_fg.backend.tooltip": "DLSS-FG が使用するフレーム生成バックエンドを選択します。自動では登録済みバックエンドの優先順位に従います。Streamline は Windows のみ対応です。この設定の変更後はゲームの再起動が必要です。",
+  "wisteria.screen.config.special.dlss_fg.backend.auto": "自動",
+  "wisteria.screen.config.special.dlss_fg.backend.streamline": "Streamline",
+  "wisteria.screen.config.special.dlss_fg.backend.ngx": "NVNGX"
+}

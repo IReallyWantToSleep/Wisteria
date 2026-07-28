@@ -1,0 +1,7 @@
+{
+  "wisteria.screen.config.special.dlss_fg.backend.name": "DLSS-FG帧生成后端",
+  "wisteria.screen.config.special.dlss_fg.backend.tooltip": "选择DLSS-FG使用的帧生成后端。自动模式优先Streamline 。Streamline 仅支持Windows。更改此选项后需要重启游戏。",
+  "wisteria.screen.config.special.dlss_fg.backend.auto": "自动",
+  "wisteria.screen.config.special.dlss_fg.backend.streamline": "Streamline",
+  "wisteria.screen.config.special.dlss_fg.backend.ngx": "NVNGX"
+}

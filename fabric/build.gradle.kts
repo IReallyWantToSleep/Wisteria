@@ -42,9 +42,4 @@ tasks.named<Jar>("jar") {
     from(commonMain.output)
 }
 
-tasks.named<ProcessResources>("processResources") {
-    from(commonMain.resources.srcDirs)
-    duplicatesStrategy = DuplicatesStrategy.INCLUDE
-}
-
 // Super Resolution must be present at runtime: drop an SR jar into run/mods.

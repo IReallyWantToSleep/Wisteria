@@ -27,9 +27,9 @@ fun cfg(key: String): String = versionProperties.getProperty(key)
  * The Super Resolution API artifact Wisteria compiles against.
  *
  * One Maven coordinate serves every Minecraft version: the API's public signatures are
- * identical across them and reference no Minecraft types, and Super Resolution builds the
- * artifact from its 1.21.1 configuration so the class files stay readable by Java 21 and
- * Java 25 toolchains alike.
+ * identical across them, the few Minecraft types they name (Component) keep the same
+ * package on every version, and Super Resolution builds the artifact from its 1.21.1
+ * configuration so the class files stay readable by Java 21 and Java 25 toolchains alike.
  *
  * To work against unpublished API changes, run `publishToMavenLocal` in the Super
  * Resolution project and set `sr_version` to that build - mavenLocal() is searched first.

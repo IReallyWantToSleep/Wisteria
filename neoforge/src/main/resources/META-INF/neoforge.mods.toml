@@ -8,7 +8,7 @@ version = "${mod_version}"
 displayName = "${mod_name}"
 authors = "${mod_authors}"
 description = '''
-Frame generation backends for Super Resolution.
+NVIDIA frame generation and Reflex backends for Super Resolution, plus the Streamline runtime they need.
 '''
 
 [[dependencies.${mod_id}]]
