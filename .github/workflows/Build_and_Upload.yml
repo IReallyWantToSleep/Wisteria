@@ -62,12 +62,9 @@ jobs:
           # buildAllVersions runs each Minecraft version as a nested GradleBuild, and those
           # inherit the environment but not -P properties from the outer command line.
           ORG_GRADLE_PROJECT_streamline_bin_dir: ${{ github.workspace }}/streamline/bin/x64
-          # A hosted runner has 7 GB. The project defaults - a 6 GB daemon and 12 GB for
-          # Vineflower - are sized for a workstation and get the runner OOM-killed.
-          WISTERIA_DECOMPILE_XMX: 4G
         # Unlike the push build, a partial result is not publishable: a release missing a
         # loader or a Minecraft version is worse than no release, so this failing stops here.
-        run: ./gradlew buildAllVersions -Dorg.gradle.jvmargs=-Xmx3g
+        run: ./gradlew buildAllVersions
 
       - name: Find latest changelog
         id: changelog
