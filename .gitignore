@@ -12,3 +12,6 @@ build_jars/
 
 # Streamline runtime, copied in from a local SDK checkout by syncStreamlineLibraries.
 common/src/main/resources/streamline/
+
+# Streamline SDK as unpacked by the CI workflows.
+streamline/

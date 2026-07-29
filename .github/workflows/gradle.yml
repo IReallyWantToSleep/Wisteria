@@ -1,0 +1,112 @@
+name: Build
+
+on:
+  push:
+    branches: [ '*' ]
+
+env:
+  # NVIDIA Streamline SDK release supplying the runtime DLLs that common/build.gradle.kts
+  # syncs into the jar. Bump here; the cache key follows.
+  STREAMLINE_VERSION: v2.12.0
+
+jobs:
+  build:
+    if: ${{ !contains(github.event.head_commit.message, 'SKIP') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Restore Streamline runtime
+        id: streamline-cache
+        uses: actions/cache@v4
+        with:
+          path: streamline/bin/x64
+          key: streamline-${{ env.STREAMLINE_VERSION }}
+
+      - name: Download Streamline SDK
+        if: steps.streamline-cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$STREAMLINE_VERSION" -R NVIDIA-RTX/Streamline \
+            --pattern 'streamline-sdk-*.zip' --output /tmp/streamline-sdk.zip --clobber
+          # Top-level bin/x64 only: development/ holds the much larger debug variants of the
+          # same DLLs, which are never shipped.
+          unzip -q /tmp/streamline-sdk.zip 'bin/x64/*' -x 'bin/x64/development/*' -d streamline
+          rm /tmp/streamline-sdk.zip
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: 21
+          distribution: temurin
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+          gradle-home-cache-includes: |
+            caches
+            notifications
+            wrapper
+          gradle-home-cache-excludes: |
+            caches/build-cache-1
+
+      - name: Build
+        id: build
+        if: ${{ !cancelled() }}
+        env:
+          # buildAllVersions runs each Minecraft version as a nested GradleBuild, and those
+          # inherit the environment but not -P properties from the outer command line.
+          ORG_GRADLE_PROJECT_streamline_bin_dir: ${{ github.workspace }}/streamline/bin/x64
+          # A hosted runner has 7 GB. The project defaults - a 6 GB daemon and 12 GB for
+          # Vineflower - are sized for a workstation and get the runner OOM-killed.
+          WISTERIA_DECOMPILE_XMX: 4G
+        run: ./gradlew buildAllVersions -Dorg.gradle.jvmargs=-Xmx3g
+        # A version that fails to build must not cost us the jars of the ones that did, so
+        # the upload steps run either way. The job is failed at the end instead.
+        continue-on-error: true
+
+      - name: Install @actions/artifact
+        run: npm install @actions/artifact@2
+
+      - name: Upload JARs individually
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {DefaultArtifactClient} = require('@actions/artifact')
+            const fs = require('fs')
+            const path = require('path')
+
+            const client = new DefaultArtifactClient()
+            const buildDir = path.join(process.env.GITHUB_WORKSPACE, 'build_jars')
+
+            if (!fs.existsSync(buildDir)) {
+              core.warning('build_jars directory not found, skipping upload')
+              return
+            }
+
+            const jars = fs.readdirSync(buildDir).filter(f => f.endsWith('.jar'))
+            core.info(`Found ${jars.length} JAR(s) to upload`)
+
+            for (const jar of jars) {
+              const name = path.basename(jar, '.jar')
+              const filePath = path.join(buildDir, jar)
+              core.info(`Uploading: ${jar}`)
+              await client.uploadArtifact(name, [filePath], buildDir, {
+                compressionLevel: 0
+              })
+            }
+
+            core.info(`Successfully uploaded ${jars.length} artifact(s)`)
+
+      - name: Report build result
+        if: steps.build.outcome == 'failure'
+        run: |
+          echo "::error::buildAllVersions failed. Any jars that were produced have still been uploaded."
+          exit 1
