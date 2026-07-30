@@ -58,6 +58,15 @@ allprojects {
         maven("https://maven.fabricmc.net/")
         maven("https://maven.neoforged.net/releases")
         maven("https://libraries.minecraft.net")
+        maven("https://api.modrinth.com/maven") {
+            content { includeGroup("maven.modrinth") }
+        }
+        maven("https://maven.caffeinemc.net/releases") {
+            content { includeGroup("net.caffeinemc") }
+        }
+        maven("https://maven.caffeinemc.net/snapshots") {
+            content { includeGroup("net.caffeinemc") }
+        }
         // Super Resolution's API artifact. Development builds are published as -SNAPSHOT,
         // so point at the snapshot repository; reads are anonymous, no credentials needed.
         maven("https://nexus.nyat.icu/repository/maven-snapshots/") {

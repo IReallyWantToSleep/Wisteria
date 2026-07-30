@@ -21,6 +21,72 @@ val loom = extensions.getByType<net.fabricmc.loom.api.LoomGradleExtensionAPI>()
 fun modImplementationName(): String =
     listOf("modImplementation", "implementation").first { configurations.findByName(it) != null }
 
+data class RuntimeModrinthDependency(
+    val name: String,
+    val version: String,
+    val minecraftVersion: String?
+)
+
+fun runtimeModrinthDependencies(): List<RuntimeModrinthDependency> {
+    val prefix = "fabric_runtime_modrinth."
+    return rootProject.extra.properties.keys
+        .filter { it.startsWith(prefix) }
+        .sorted()
+        .map { key ->
+            val value = rootProject.extra.properties[key]?.toString().orEmpty()
+            val parts = value.split("|", limit = 2)
+            require(parts.firstOrNull()?.isNotBlank() == true) {
+                "Invalid runtime dependency '$key' in versions/${rootProject.extra["wisteriaVersionId"]}.properties"
+            }
+            RuntimeModrinthDependency(
+                name = key.removePrefix(prefix),
+                version = parts[0],
+                minecraftVersion = parts.getOrNull(1)?.takeIf { it.isNotBlank() }
+            )
+        }
+}
+
+fun usesCaffeineSodium(): Boolean {
+    val minecraftVersion = cfg("minecraft_version")
+    if (minecraftVersion.startsWith("26.")) {
+        return true
+    }
+    val minor = Regex("""^1\.21\.(\d+)$""").matchEntire(minecraftVersion)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.toIntOrNull()
+    return minor != null && minor >= 11
+}
+
+fun fabricModrinthNotation(dependency: RuntimeModrinthDependency): String {
+    val minecraftVersion = dependency.minecraftVersion ?: cfg("minecraft_version")
+    return if ((dependency.name == "sodium" && usesCaffeineSodium())
+        || dependency.name == "sodium.maven"
+    ) {
+        "net.caffeinemc:sodium-fabric:${dependency.version}"
+    } else {
+        "maven.modrinth:${dependency.name}:${dependency.version}-fabric,$minecraftVersion"
+    }
+}
+
+fun superResolutionModJar(): File {
+    val srModDir = rootProject.file("sr_mod")
+    val prefix = "super_resolution-fabric-${cfg("sr_artifact_mc")}-"
+    val variant = providers.gradleProperty("sr_mod_variant").orElse("opengl").get()
+    val candidates = srModDir.listFiles()
+        ?.filter { it.isFile && it.name.startsWith(prefix) && it.name.endsWith(".$variant.jar") }
+        ?.sortedBy { it.name }
+        ?: emptyList()
+    if (candidates.size != 1) {
+        throw GradleException(
+            "Expected exactly one Fabric Super Resolution jar matching "
+                + "$prefix*.$variant.jar in ${srModDir.absolutePath}, found: "
+                + candidates.joinToString { it.name }.ifBlank { "<none>" }
+        )
+    }
+    return candidates.single()
+}
+
 // Loom's configurations are addressed by name: it registers them too late in the Kotlin
 // DSL accessor pass for the generated typed accessors to exist.
 dependencies {
@@ -32,14 +98,18 @@ dependencies {
     }
     add(modImplementationName(), "net.fabricmc:fabric-loader:${cfg("fabric_loader_version")}")
     add(modImplementationName(), "net.fabricmc.fabric-api:fabric-api:${cfg("fabric_api_version")}")
+    add(modImplementationName(), files(superResolutionModJar()))
 
-    // Shared code is compiled here and bundled into the jar below, not published.
-    compileOnly(commonMain.output)
+    for (dependency in runtimeModrinthDependencies()) {
+        add(modImplementationName(), fabricModrinthNotation(dependency))
+    }
+
+    // Keep the shared output on the development runtime classpath as well. The loader jar
+    // bundles it for distribution, but Loom's runClient uses classes directories directly.
+    implementation(commonMain.output)
 }
 
 // Bundle the shared module's classes and resources into the loader jar.
 tasks.named<Jar>("jar") {
     from(commonMain.output)
 }
-
-// Super Resolution must be present at runtime: drop an SR jar into run/mods.
