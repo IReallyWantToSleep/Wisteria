@@ -32,6 +32,7 @@ public final class WisteriaFrameGeneration {
     public static final String STREAMLINE_ID = "wisteria:streamline";
     /** Cross-platform raw NVNGX DLSS-G, the backend that makes frame generation work on Linux. */
     public static final String NGX_ID = "wisteria:ngx";
+    private static boolean listenerInstalled;
 
     private WisteriaFrameGeneration() {
     }
@@ -53,7 +54,10 @@ public final class WisteriaFrameGeneration {
                 .setRequiresRestartGame(true);
     }
 
-    public static void register() {
+    public static synchronized void register() {
+        if (listenerInstalled) {
+            return;
+        }
         SuperResolutionAPI.EVENT_BUS.addListener(FrameGenerationRegisterEvent.class, event -> {
             FrameGenerationRegistry.register(
                     FrameGenerationDescription.builder()
@@ -86,7 +90,9 @@ public final class WisteriaFrameGeneration {
                             .providerFactory(NgxFrameGenerationBackend::new)
                             .build()
             );
-            Wisteria.LOGGER.info("Registered frame generation backends {} and {}", STREAMLINE_ID, NGX_ID);
+            Wisteria.LOGGER.info("Wisteria providers registered: {} and {}", STREAMLINE_ID, NGX_ID);
         });
+        listenerInstalled = true;
+        Wisteria.LOGGER.info("Wisteria FG listener installed");
     }
 }

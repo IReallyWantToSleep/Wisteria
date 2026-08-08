@@ -11,9 +11,9 @@
 package org.ireallywanttosleep.wisteria.backend;
 
 import io.homo.superresolution.api.registry.FrameGenerationProvider;
-import io.homo.superresolution.common.framegeneration.constants.FGConstants;
 import io.homo.superresolution.common.framegeneration.FrameGenerationMode;
 import io.homo.superresolution.common.framegeneration.FramePresentPlan;
+import io.homo.superresolution.common.framegeneration.constants.FGConstants;
 import io.homo.superresolution.common.presentation.capture.FrameResources;
 
 /**
@@ -45,7 +45,6 @@ public final class NgxFrameGenerationBackend implements FrameGenerationProvider 
 
     @Override
     public int presentationManagedGeneratedFrameCount(FrameGenerationMode mode) {
-        // NGX hands the interpolated frames back for the swapchain to present.
         return Math.min(
                 Math.max(1, mode.generatedFrameCount()),
                 supportedGeneratedFrameCount()
@@ -69,14 +68,15 @@ public final class NgxFrameGenerationBackend implements FrameGenerationProvider 
             int backBufferCount,
             long commandBuffer
     ) {
-        NgxFrameGenerationAdapter.PrepareResult result = NgxFrameGenerationAdapter.prepareFrame(
-                frameResources,
-                constants,
-                mode,
-                colorWidth,
-                colorHeight,
-                commandBuffer
-        );
+        NgxFrameGenerationAdapter.PrepareResult result =
+                NgxFrameGenerationAdapter.prepareFrame(
+                        frameResources,
+                        constants,
+                        mode,
+                        colorWidth,
+                        colorHeight,
+                        commandBuffer
+                );
         return result == null
                 ? FramePresentPlan.none()
                 : FramePresentPlan.generated(result.generatedFrames(), result.realFrame());
@@ -84,7 +84,7 @@ public final class NgxFrameGenerationBackend implements FrameGenerationProvider 
 
     @Override
     public void finishPresent(FrameResources frameResources, boolean frameGenerationActive) {
-        // The mod paces and presents NGX frames itself; nothing to report back.
+        // SR owns the generated/real present plan and pacing for raw NGX.
     }
 
     @Override
