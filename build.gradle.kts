@@ -103,6 +103,7 @@ subprojects {
             "mod_license" to providers.gradleProperty("mod_license").get(),
             "mod_authors" to providers.gradleProperty("mod_authors").get(),
             "sr_mod_id" to providers.gradleProperty("sr_mod_id").get(),
+            "sr_min_version" to providers.gradleProperty("sr_min_version").get(),
             "java_version" to cfg("java_version"),
             "minecraft_version" to cfg("minecraft_version"),
             "fabric_mc_range" to (versionProperties.getProperty("fabric_mc_range") ?: ""),
