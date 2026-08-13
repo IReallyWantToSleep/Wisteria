@@ -27,7 +27,6 @@ public final class Wisteria {
     public static final Logger LOGGER = LoggerFactory.getLogger("Wisteria");
 
     private static boolean initialized;
-    private static boolean initializing;
 
     private Wisteria() {
     }
@@ -39,28 +38,21 @@ public final class Wisteria {
      * it is where the Streamline runtime gets unpacked.
      */
     public static synchronized void init(Path gameDirectory) {
-        if (initialized || initializing) {
+        if (initialized) {
             return;
         }
-        initializing = true;
-        try {
-            LOGGER.info("Wisteria initializing");
-            // Extraction itself is deferred: SR only asks for the directory if it decides to
-            // load Streamline, so builds without the SDK never touch the disk.
-            StreamlineDistribution.provide(() -> {
-                if (VulkanPresentationFeature.shouldInitializeStreamline()) {
-                    return StreamlineNativeExtractor.extract(
-                            SuperResolutionConstants.NATIVE_LIBRARIES_DIR.getPath()
-                    );
-                }
-                return null;
-            });
-            WisteriaFrameGeneration.register();
-            WisteriaLowLatency.register();
-            initialized = true;
-            LOGGER.info("Wisteria initialized");
-        } finally {
-            initializing = false;
-        }
+        initialized = true;
+        LOGGER.info("Wisteria initializing");
+        // Extraction itself is deferred: SR only asks for the directory if it decides to
+        // load Streamline, so builds without the SDK never touch the disk.
+        StreamlineDistribution.provide(() -> {
+            StreamlineNativeExtractor.extract(SuperResolutionConstants.NATIVE_LIBRARIES_DIR.getPath());
+            if (VulkanPresentationFeature.shouldInitializeStreamline()){
+                return SuperResolutionConstants.NATIVE_LIBRARIES_DIR.getPath();
+            }
+            return null;
+        });
+        WisteriaFrameGeneration.register();
+        WisteriaLowLatency.register();
     }
 }

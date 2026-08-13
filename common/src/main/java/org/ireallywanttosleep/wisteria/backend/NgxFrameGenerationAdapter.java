@@ -6,17 +6,16 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
- *
- * Moved from Super Resolution (io.homo.superresolution.common.framegeneration)
- * when frame generation was split into this mod; original copyright retained.
  */
 
 package org.ireallywanttosleep.wisteria.backend;
 
-import io.homo.superresolution.common.framegeneration.FrameGenerationMode;
+import io.homo.superresolution.api.registry.AsyncFrameGenerationDispatchRequest;
+import io.homo.superresolution.api.registry.AsyncFrameGenerationDispatchResult;
+import io.homo.superresolution.api.registry.FrameGenerationDispatchCompletion;
+import io.homo.superresolution.api.registry.ProviderOutputLease;
 import io.homo.superresolution.common.framegeneration.constants.FGConstants;
 import io.homo.superresolution.common.presentation.capture.FrameResources;
-import io.homo.superresolution.core.RenderSystems;
 import io.homo.superresolution.core.graphics.impl.texture.TextureDescription;
 import io.homo.superresolution.core.graphics.impl.texture.TextureType;
 import io.homo.superresolution.core.graphics.impl.texture.TextureUsages;
@@ -41,8 +40,6 @@ import org.lwjgl.vulkan.VkImageMemoryBarrier;
 
 import java.nio.FloatBuffer;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -50,15 +47,13 @@ import java.util.concurrent.ConcurrentHashMap;
 import static org.lwjgl.vulkan.VK10.*;
 
 /**
- * Synchronous raw NVNGX DLSS-G adapter aligned with Wisteria 1.21.1.
- *
- * <p>Feature creation is recorded into a dedicated command buffer, submitted, and
- * fence-completed before the feature is published. Per-frame evaluation is then
- * recorded into SR's synchronous presentation command buffer and returned as the
- * capability-driven generated outputs plus the NGX real output.</p>
+ * Raw NVNGX DLSS-G implementation for the application-managed async provider contract.
+ * All NGX feature/session, output-slot, layout, and lease state is FG-thread-affine.
  */
 public final class NgxFrameGenerationAdapter {
     private static final int MIN_WIDTH_OR_HEIGHT = 128;
+    private static final int OUTPUT_SLOT_COUNT = 3;
+    private static final int MAX_GENERATED_FRAMES = 5;
     private static final Set<String> REPORTED_FAILURES = ConcurrentHashMap.newKeySet();
 
     private static boolean supportQueried;
@@ -66,30 +61,51 @@ public final class NgxFrameGenerationAdapter {
     private static NgxParameters ngxParameters;
     private static NgxFeature ngxFeature;
     private static FeatureKey featureKey;
-    private static final List<VulkanTexture> interpolatedTextures = new ArrayList<>();
-    private static VulkanTexture realOutputTexture;
-    private static final NgxDLSSFGOptEvalParams OPT_EVAL_PARAMS =
-            new NgxDLSSFGOptEvalParams();
+    private static SlotKey outputKey;
+    private static final List<OutputSlot> outputSlots = new ArrayList<>();
+    private static final NgxDLSSFGOptEvalParams optEvalParams = new NgxDLSSFGOptEvalParams();
     private static FloatBuffer cameraViewToClip;
     private static FloatBuffer clipToCameraView;
     private static FloatBuffer clipToLensClip;
     private static FloatBuffer clipToPrevClip;
     private static FloatBuffer prevClipToClip;
+    private static Thread fgThread;
+    private static boolean historyInvalid;
 
     private NgxFrameGenerationAdapter() {
     }
 
+    /** Thread-agnostic setup only; NGX session resources are created by dispatchAsync. */
     public static synchronized void initialize() {
         supportQueried = false;
         maxGeneratedFrameCount = 0;
+        historyInvalid = false;
+        fgThread = null;
         REPORTED_FAILURES.clear();
     }
 
-    public static synchronized void shutdown() {
+    /**
+     * Terminal thread-affine teardown, invoked by the shared scheduler after every output
+     * lease has drained and its FG submission completion has been awaited.
+     */
+    public static synchronized void shutdownOnFrameGenerationThread() {
+        requireFgThread();
         releaseFeature(true);
         freeMatrixBuffers();
+        historyInvalid = false;
+        fgThread = null;
+    }
+
+    /** Thread-agnostic post-FG teardown; it must not touch NGX session/output resources. */
+    public static synchronized void shutdown() {
+        if (ngxFeature != null || ngxParameters != null || !outputSlots.isEmpty()) {
+            throw new IllegalStateException(
+                    "NGX session resources were not released on the frame-generation thread"
+            );
+        }
         supportQueried = false;
         maxGeneratedFrameCount = 0;
+        historyInvalid = false;
         REPORTED_FAILURES.clear();
     }
 
@@ -112,216 +128,241 @@ public final class NgxFrameGenerationAdapter {
     }
 
     /**
-     * Records DLSS-G evaluation in the synchronous presentation command buffer.
-     * The returned generated frames are presented before the returned real frame.
+     * Records one complete NGX dispatch into the scheduler-owned FG command buffer. Failed
+     * results intentionally contain neither an output nor a lease, so the scheduler can use
+     * its single Real-only fallback path.
      */
-    public static synchronized PrepareResult prepareFrame(
-            FrameResources frameResources,
-            FGConstants constants,
-            FrameGenerationMode mode,
-            int colorWidth,
-            int colorHeight,
-            long commandBuffer
+    public static synchronized AsyncFrameGenerationDispatchResult dispatchAsync(
+            AsyncFrameGenerationDispatchRequest request
     ) {
-        VulkanDevice device = RenderSystems.vulkan() == null
-                ? null
-                : RenderSystems.vulkan().device();
-        VulkanTexture backbuffer = frameResources == null
-                ? null
-                : frameResources.finalColorVulkanTexture();
-        VulkanTexture hudless = frameResources == null
-                ? null
-                : frameResources.hudlessColorVulkanTexture();
-        VulkanTexture depth = frameResources == null
-                ? null
-                : frameResources.depthVulkanTexture();
-        VulkanTexture motionVectors = frameResources == null
-                ? null
-                : frameResources.motionVectorVulkanTexture();
-        if (!validInputs(
-                device,
-                frameResources,
-                constants,
-                mode,
-                colorWidth,
-                colorHeight,
-                commandBuffer,
-                backbuffer,
-                hudless,
-                depth,
-                motionVectors
-        )) {
-            return null;
+        requireFgThread();
+        if (request == null) {
+            return AsyncFrameGenerationDispatchResult.failed("NGX dispatch request is null");
         }
-
-        int generatedFrameCount = Math.min(
-                Math.max(1, mode.generatedFrameCount()),
-                supportedGeneratedFrameCount()
-        );
-        VulkanTexture realOutput;
         try {
-            ensureFeature(device, backbuffer, depth);
-            ensureInterpolatedTextures(device, generatedFrameCount, backbuffer);
-            realOutput = ensureRealOutputTexture(device, backbuffer);
-        } catch (RuntimeException | Error throwable) {
-            reportFailureOnce(
-                    "feature-create",
-                    "Failed to create the NGX DLSS-G feature",
-                    throwable
+            if (!isAvailable()) {
+                return AsyncFrameGenerationDispatchResult.failed("NGX DLSS-G is unavailable");
+            }
+
+            FrameResources frameResources = request.frameResources();
+            VulkanTexture backbuffer = frameResources.finalColorVulkanTexture();
+            VulkanTexture hudless = frameResources.hudlessColorVulkanTexture();
+            VulkanTexture depth = frameResources.depthVulkanTexture();
+            VulkanTexture motionVectors = frameResources.motionVectorVulkanTexture();
+            String inputFailure = inputFailureReason(request, backbuffer, hudless, depth, motionVectors);
+            if (inputFailure != null) {
+                return AsyncFrameGenerationDispatchResult.failed(
+                        "NGX DLSS-G frame inputs are incompatible: " + inputFailure
+                );
+            }
+
+            int generatedFrameCount = Math.min(
+                    Math.min(request.requestedGeneratedFrameCount(), supportedGeneratedFrameCount()),
+                    MAX_GENERATED_FRAMES
             );
-            releaseFeature(false);
-            return null;
-        }
-
-        recordTransitionsToGeneral(
-                device,
-                commandBuffer,
-                backbuffer,
-                hudless,
-                depth,
-                motionVectors,
-                generatedFrameCount,
-                realOutput
-        );
-        fillOptEvalParams(constants, generatedFrameCount);
-
-        for (int frameIndex = 1; frameIndex <= generatedFrameCount; frameIndex++) {
-            OPT_EVAL_PARAMS.multiFrameCount = generatedFrameCount;
-            OPT_EVAL_PARAMS.multiFrameIndex = frameIndex;
-            VulkanTexture generatedOutput = interpolatedTextures.get(frameIndex - 1);
-            int result;
-            try (
-                    NgxResourceVK backbufferResource = createResource(backbuffer, false);
-                    NgxResourceVK depthResource = createResource(depth, false);
-                    NgxResourceVK motionVectorsResource = createResource(motionVectors, false);
-                    NgxResourceVK hudlessResource = createResource(hudless, false);
-                    NgxResourceVK outputResource = createResource(generatedOutput, true);
-                    NgxResourceVK realOutputResource = createResource(realOutput, true)
-            ) {
-                NgxVKDLSSFGEvalParams evalParams = new NgxVKDLSSFGEvalParams();
-                evalParams.backbuffer = backbufferResource;
-                evalParams.depth = depthResource;
-                evalParams.motionVectors = motionVectorsResource;
-                evalParams.hudless = hudlessResource;
-                evalParams.outputInterpolatedFrame = outputResource;
-                evalParams.outputRealFrame = realOutputResource;
-                result = NgxVulkan.evaluateDLSSFG(
-                        commandBuffer,
-                        ngxFeature,
-                        ngxParameters,
-                        evalParams,
-                        OPT_EVAL_PARAMS
-                );
+            if (generatedFrameCount <= 0) {
+                return AsyncFrameGenerationDispatchResult.failed("NGX DLSS-G requested no generated frames");
             }
-            if (!NgxConstants.succeeded(result)) {
-                reportFailureOnce(
-                        "evaluate-" + result,
-                        "NGX DLSS-G evaluation failed for logical frame "
-                                + frameResources.logicalFrameIndex()
-                                + ", generated frame " + frameIndex
-                                + "/" + generatedFrameCount
-                                + " with result=" + result,
-                        null
-                );
-                return null;
-            }
-            generatedOutput.setCurrentLayout(VK_IMAGE_LAYOUT_GENERAL);
-        }
 
-        realOutput.setCurrentLayout(VK_IMAGE_LAYOUT_GENERAL);
-        return new PrepareResult(
-                List.copyOf(interpolatedTextures.subList(0, generatedFrameCount)),
-                realOutput
-        );
+            boolean sessionCreated = ensureFeature(request.device(), backbuffer, depth);
+            OutputSlot slot = acquireOutputSlot(request, backbuffer);
+            if (slot == null) {
+                return AsyncFrameGenerationDispatchResult.failed("No reusable NGX DLSS-G output slot");
+            }
+
+            List<LayoutTransition> layoutTransitions = List.of();
+            try {
+                VulkanTexture realOutput = slot.realOutput();
+                List<VulkanTexture> generatedOutputs = slot.generatedOutputs(generatedFrameCount);
+                layoutTransitions = recordTransitionsToGeneral(
+                        request.device(),
+                        request.commandBuffer(),
+                        backbuffer,
+                        hudless,
+                        depth,
+                        motionVectors,
+                        generatedOutputs,
+                        realOutput
+                );
+                boolean resetHistory = historyInvalid
+                        || request.providerInputSnapshot().historyResetRequested();
+                fillOptEvalParams(
+                        request.providerInputSnapshot().constants(),
+                        generatedFrameCount,
+                        resetHistory
+                );
+
+                for (int frameIndex = 1; frameIndex <= generatedFrameCount; frameIndex++) {
+                    optEvalParams.multiFrameCount = generatedFrameCount;
+                    optEvalParams.multiFrameIndex = frameIndex;
+                    int result = evaluate(
+                            request.commandBuffer(),
+                            backbuffer,
+                            depth,
+                            motionVectors,
+                            hudless,
+                            generatedOutputs.get(frameIndex - 1),
+                            realOutput
+                    );
+                    if (!NgxConstants.succeeded(result)) {
+                        reportFailureOnce(
+                                "evaluate-" + result,
+                                "NGX DLSS-G evaluation failed for frame "
+                                        + frameResources.logicalFrameIndex() + " with result=" + result,
+                                null
+                        );
+                        historyInvalid = true;
+                        restoreLayouts(layoutTransitions);
+                        slot.abort();
+                        return AsyncFrameGenerationDispatchResult.failed(
+                                "NGX DLSS-G evaluation failed with result=" + result
+                        );
+                    }
+                }
+                for (VulkanTexture output : generatedOutputs) {
+                    output.setCurrentLayout(VK_IMAGE_LAYOUT_GENERAL);
+                }
+                realOutput.setCurrentLayout(VK_IMAGE_LAYOUT_GENERAL);
+                historyInvalid = false;
+                return AsyncFrameGenerationDispatchResult.success(
+                        generatedFrameCount,
+                        slot.lease(generatedOutputs, layoutTransitions),
+                        resetHistory
+                                ? AsyncFrameGenerationDispatchResult.HistoryDisposition.RESET
+                                : sessionCreated
+                                ? AsyncFrameGenerationDispatchResult.HistoryDisposition.SEEDED
+                                : AsyncFrameGenerationDispatchResult.HistoryDisposition.UNCHANGED
+                );
+            } catch (Throwable throwable) {
+                restoreLayouts(layoutTransitions);
+                slot.abort();
+                historyInvalid = true;
+                reportFailureOnce("dispatch", "NGX DLSS-G dispatch failed", throwable);
+                return AsyncFrameGenerationDispatchResult.failed("NGX DLSS-G dispatch failed");
+            }
+        } catch (Throwable throwable) {
+            historyInvalid = true;
+            reportFailureOnce("dispatch-setup", "NGX DLSS-G dispatch setup failed", throwable);
+            return AsyncFrameGenerationDispatchResult.failed("NGX DLSS-G dispatch setup failed");
+        }
     }
 
     public static synchronized void disable() {
-        // Keep the resident feature so menu/screenshot transitions do not recreate it.
+        // Keep the session resident. The next enabled dispatch receives a fresh snapshot.
     }
 
-    private static boolean validInputs(
-            VulkanDevice device,
-            FrameResources frameResources,
-            FGConstants constants,
-            FrameGenerationMode mode,
-            int colorWidth,
-            int colorHeight,
-            long commandBuffer,
+    private static String inputFailureReason(
+            AsyncFrameGenerationDispatchRequest request,
             VulkanTexture backbuffer,
             VulkanTexture hudless,
             VulkanTexture depth,
             VulkanTexture motionVectors
     ) {
-        if (!isAvailable()
-                || device == null
-                || frameResources == null
-                || constants == null
-                || mode == null
-                || !mode.isEnabled()
-                || commandBuffer == 0L
-                || backbuffer == null
-                || hudless == null
-                || depth == null
-                || motionVectors == null) {
-            return false;
+        if (backbuffer == null) {
+            return "backbuffer is missing";
         }
-        if (backbuffer.getDevice() != device
-                || hudless.getDevice() != device
-                || depth.getDevice() != device
-                || motionVectors.getDevice() != device) {
-            return false;
+        if (hudless == null) {
+            return "hudless color is missing";
         }
-        if (backbuffer.getWidth() != colorWidth
-                || backbuffer.getHeight() != colorHeight
-                || hudless.getWidth() != colorWidth
-                || hudless.getHeight() != colorHeight
-                || hudless.getTextureFormat() != backbuffer.getTextureFormat()) {
-            return false;
+        if (depth == null) {
+            return "depth is missing";
         }
-        return depth.getWidth() == motionVectors.getWidth()
-                && depth.getHeight() == motionVectors.getHeight()
-                && colorWidth >= MIN_WIDTH_OR_HEIGHT
-                && colorHeight >= MIN_WIDTH_OR_HEIGHT;
+        if (motionVectors == null) {
+            return "motion vectors are missing";
+        }
+        if (backbuffer.getWidth() != request.outputWidth()
+                || backbuffer.getHeight() != request.outputHeight()) {
+            return "backbuffer extent "
+                    + backbuffer.getWidth() + "x" + backbuffer.getHeight()
+                    + " != swapchain extent "
+                    + request.outputWidth() + "x" + request.outputHeight();
+        }
+        if (hudless.getWidth() != request.outputWidth()
+                || hudless.getHeight() != request.outputHeight()) {
+            return "hudless extent "
+                    + hudless.getWidth() + "x" + hudless.getHeight()
+                    + " != swapchain extent "
+                    + request.outputWidth() + "x" + request.outputHeight();
+        }
+        if (depth.getWidth() != motionVectors.getWidth()
+                || depth.getHeight() != motionVectors.getHeight()) {
+            return "depth extent "
+                    + depth.getWidth() + "x" + depth.getHeight()
+                    + " != motion-vector extent "
+                    + motionVectors.getWidth() + "x" + motionVectors.getHeight();
+        }
+        if (request.outputWidth() < MIN_WIDTH_OR_HEIGHT
+                || request.outputHeight() < MIN_WIDTH_OR_HEIGHT) {
+            return "swapchain extent is below the NGX minimum "
+                    + MIN_WIDTH_OR_HEIGHT + "px";
+        }
+        return null;
     }
 
-    private static synchronized void refreshSupport() {
+    private static int evaluate(
+            long commandBuffer,
+            VulkanTexture backbuffer,
+            VulkanTexture depth,
+            VulkanTexture motionVectors,
+            VulkanTexture hudless,
+            VulkanTexture output,
+            VulkanTexture realOutput
+    ) {
+        try (
+                NgxResourceVK backbufferResource = createResource(backbuffer, false);
+                NgxResourceVK depthResource = createResource(depth, false);
+                NgxResourceVK motionVectorsResource = createResource(motionVectors, false);
+                NgxResourceVK hudlessResource = createResource(hudless, false);
+                NgxResourceVK outputResource = createResource(output, true);
+                NgxResourceVK realOutputResource = createResource(realOutput, true)
+        ) {
+            NgxVKDLSSFGEvalParams evalParams = new NgxVKDLSSFGEvalParams();
+            evalParams.backbuffer = backbufferResource;
+            evalParams.depth = depthResource;
+            evalParams.motionVectors = motionVectorsResource;
+            evalParams.hudless = hudlessResource;
+            evalParams.outputInterpolatedFrame = outputResource;
+            evalParams.outputRealFrame = realOutputResource;
+            return NgxVulkan.evaluateDLSSFG(
+                    commandBuffer,
+                    ngxFeature,
+                    ngxParameters,
+                    evalParams,
+                    optEvalParams
+            );
+        }
+    }
+
+    private static void refreshSupport() {
         supportQueried = true;
         maxGeneratedFrameCount = 0;
         if (!NgxInitializer.initializeIfSupported()) {
             return;
         }
-
         NgxParameters capabilities = new NgxParameters();
-        try {
-            int capabilitiesResult = NgxVulkan.getCapabilityParameters(capabilities);
-            if (!NgxConstants.succeeded(capabilitiesResult)) {
-                reportFailureOnce(
-                        "capability-" + capabilitiesResult,
-                        "NVSDK_NGX_VULKAN_GetCapabilityParameters failed with result="
-                                + capabilitiesResult,
-                        null
-                );
-                return;
-            }
-
-            int[] available = new int[1];
-            int availableResult = capabilities.getInt(
-                    NgxConstants.FRAME_GENERATION_AVAILABLE,
-                    available
+        int capabilitiesResult = NgxVulkan.getCapabilityParameters(capabilities);
+        if (!NgxConstants.succeeded(capabilitiesResult)) {
+            reportFailureOnce(
+                    "capability-" + capabilitiesResult,
+                    "NVSDK_NGX_VULKAN_GetCapabilityParameters failed with result=" + capabilitiesResult,
+                    null
             );
+            return;
+        }
+        try {
+            int[] available = new int[1];
+            int availableResult = capabilities.getInt(NgxConstants.FRAME_GENERATION_AVAILABLE, available);
             if (!NgxConstants.succeeded(availableResult) || available[0] == 0) {
                 logUnavailableReason(capabilities);
                 return;
             }
-
             long[] multiFrameCountMax = new long[1];
             int multiFrameResult = capabilities.getUnsignedInt(
                     NgxConstants.DLSSFG_MULTI_FRAME_COUNT_MAX,
                     multiFrameCountMax
             );
-            maxGeneratedFrameCount = NgxConstants.succeeded(multiFrameResult)
-                    && multiFrameCountMax[0] > 1
-                    ? (int) multiFrameCountMax[0]
+            maxGeneratedFrameCount = NgxConstants.succeeded(multiFrameResult) && multiFrameCountMax[0] > 1
+                    ? Math.min((int) multiFrameCountMax[0], MAX_GENERATED_FRAMES)
                     : 1;
             Wisteria.LOGGER.info(
                     "NGX DLSS-G is available, maximum generated frames per rendered frame: {}",
@@ -339,14 +380,8 @@ public final class NgxFrameGenerationAdapter {
         long[] driverMinor = new long[1];
         capabilities.getInt(NgxConstants.FRAME_GENERATION_FEATURE_INIT_RESULT, initResult);
         capabilities.getInt(NgxConstants.FRAME_GENERATION_NEEDS_UPDATED_DRIVER, needsDriver);
-        capabilities.getUnsignedInt(
-                NgxConstants.FRAME_GENERATION_MIN_DRIVER_VERSION_MAJOR,
-                driverMajor
-        );
-        capabilities.getUnsignedInt(
-                NgxConstants.FRAME_GENERATION_MIN_DRIVER_VERSION_MINOR,
-                driverMinor
-        );
+        capabilities.getUnsignedInt(NgxConstants.FRAME_GENERATION_MIN_DRIVER_VERSION_MAJOR, driverMajor);
+        capabilities.getUnsignedInt(NgxConstants.FRAME_GENERATION_MIN_DRIVER_VERSION_MINOR, driverMinor);
         reportFailureOnce(
                 "unavailable",
                 "NGX DLSS-G is not available on this system. FeatureInitResult=" + initResult[0]
@@ -356,7 +391,7 @@ public final class NgxFrameGenerationAdapter {
         );
     }
 
-    private static void ensureFeature(
+    private static boolean ensureFeature(
             VulkanDevice device,
             VulkanTexture backbuffer,
             VulkanTexture depth
@@ -369,19 +404,17 @@ public final class NgxFrameGenerationAdapter {
                 depth.getHeight()
         );
         if (ngxFeature != null && ngxFeature.isValid() && desired.equals(featureKey)) {
-            return;
+            return false;
         }
+        requireNoLeasedSlots();
         releaseFeature(false);
 
         NgxParameters parameters = new NgxParameters();
         NgxFeature feature = new NgxFeature();
-        VulkanCommandBuffer createCommandBuffer = device.createCommandBuffer();
+        VulkanCommandBuffer commandBuffer = device.requireFgCommandPool().createCommandBuffer();
         try {
             int parametersResult = NgxVulkan.getCapabilityParameters(parameters);
-            requireNgxSuccess(
-                    "NVSDK_NGX_VULKAN_GetCapabilityParameters",
-                    parametersResult
-            );
+            requireNgxSuccess("NVSDK_NGX_VULKAN_GetCapabilityParameters", parametersResult);
 
             NgxDLSSFGCreateParams createParams = new NgxDLSSFGCreateParams();
             createParams.width = desired.colorWidth();
@@ -391,154 +424,109 @@ public final class NgxFrameGenerationAdapter {
             createParams.renderHeight = desired.renderHeight();
             createParams.dynamicResolutionScaling = false;
 
-            createCommandBuffer.begin();
+            commandBuffer.begin();
+            parameters.setUnsignedInt("DLSSG.UserInterfaceRecompositionEnabled",1);
             int createResult = NgxVulkan.createDLSSFG(
-                    createCommandBuffer.getNativeCommandBuffer().address(),
+                    commandBuffer.getNativeCommandBuffer().address(),
                     1,
                     1,
                     feature,
                     parameters,
                     createParams
             );
-            createCommandBuffer.end();
+            commandBuffer.end();
             requireNgxSuccess("NGX_VK_CREATE_DLSSG", createResult);
-
-            device.submitCommandBuffer(createCommandBuffer);
-            createCommandBuffer.waitForFence();
+            device.submitCommandBuffer(device.requireFgQueue(), commandBuffer);
+            commandBuffer.waitForFence();
 
             ngxParameters = parameters;
             ngxFeature = feature;
             featureKey = desired;
             Wisteria.LOGGER.info(
-                    "Created synchronous NGX DLSS-G feature: color {}x{} "
-                            + "(VkFormat {}), render {}x{}",
+                    "Created NGX DLSS-G feature on FG queue: color {}x{} (VkFormat {}), render {}x{}",
                     desired.colorWidth(),
                     desired.colorHeight(),
                     desired.backbufferFormat(),
                     desired.renderWidth(),
                     desired.renderHeight()
             );
-        } catch (RuntimeException | Error throwable) {
+            return true;
+        } catch (RuntimeException | Error e) {
             feature.close();
             parameters.close();
-            throw throwable;
+            throw e;
         } finally {
-            createCommandBuffer.destroy();
+            commandBuffer.destroy();
         }
     }
 
-    private static synchronized void releaseFeature(boolean quiet) {
-        if (ngxFeature == null
-                && ngxParameters == null
-                && interpolatedTextures.isEmpty()
-                && realOutputTexture == null) {
-            featureKey = null;
-            return;
+    private static OutputSlot acquireOutputSlot(
+            AsyncFrameGenerationDispatchRequest request,
+            VulkanTexture backbuffer
+    ) {
+        SlotKey desired = new SlotKey(
+                request.outputWidth(),
+                request.outputHeight(),
+                backbuffer.getTextureFormat().vk()
+        );
+        if (!desired.equals(outputKey)) {
+            requireNoLeasedSlots();
+            List<OutputSlot> replacementSlots = new ArrayList<>(OUTPUT_SLOT_COUNT);
+            try {
+                for (int index = 0; index < OUTPUT_SLOT_COUNT; index++) {
+                    replacementSlots.add(createOutputSlot(request.device(), backbuffer, index));
+                }
+            } catch (RuntimeException | Error e) {
+                for (OutputSlot slot : replacementSlots) {
+                    slot.destroy();
+                }
+                throw e;
+            }
+            destroyOutputSlots();
+            outputSlots.addAll(replacementSlots);
+            outputKey = desired;
         }
+        for (OutputSlot slot : outputSlots) {
+            if (slot.acquire()) {
+                return slot;
+            }
+        }
+        return null;
+    }
+
+    private static OutputSlot createOutputSlot(VulkanDevice device, VulkanTexture source, int index) {
+        List<VulkanTexture> generated = new ArrayList<>(MAX_GENERATED_FRAMES);
+        VulkanTexture real = null;
         try {
-            VulkanDevice device = RenderSystems.vulkan() == null
-                    ? null
-                    : RenderSystems.vulkan().device();
-            if (device != null) {
-                device.getMainQueue().waitIdle();
+            for (int outputIndex = 0; outputIndex < MAX_GENERATED_FRAMES; outputIndex++) {
+                generated.add(createOutputTexture(
+                        device,
+                        source,
+                        "SRDlssGSlot-" + index + "-Generated-" + outputIndex
+                ));
             }
-        } catch (Throwable throwable) {
-            if (!quiet) {
-                Wisteria.LOGGER.warn(
-                        "Failed to drain the queue before releasing DLSS-G",
-                        throwable
-                );
+            real = createOutputTexture(device, source, "SRDlssGSlot-" + index + "-Real");
+            return new OutputSlot(generated, real);
+        } catch (RuntimeException | Error e) {
+            for (VulkanTexture output : generated) {
+                output.destroy();
             }
-        }
-
-        if (ngxFeature != null) {
-            int result = ngxFeature.release();
-            if (!NgxConstants.succeeded(result) && !quiet) {
-                Wisteria.LOGGER.warn(
-                        "Failed to release the NGX DLSS-G feature. Result: {}",
-                        result
-                );
+            if (real != null) {
+                real.destroy();
             }
-            ngxFeature = null;
+            throw e;
         }
-        if (ngxParameters != null) {
-            int result = ngxParameters.destroy();
-            if (!NgxConstants.succeeded(result) && !quiet) {
-                Wisteria.LOGGER.warn(
-                        "Failed to destroy the NGX DLSS-G parameters. Result: {}",
-                        result
-                );
-            }
-            ngxParameters = null;
-        }
-        for (VulkanTexture texture : interpolatedTextures) {
-            texture.destroy();
-        }
-        interpolatedTextures.clear();
-        if (realOutputTexture != null) {
-            realOutputTexture.destroy();
-            realOutputTexture = null;
-        }
-        featureKey = null;
-    }
-
-    private static void ensureInterpolatedTextures(
-            VulkanDevice device,
-            int count,
-            VulkanTexture backbuffer
-    ) {
-        boolean matches = interpolatedTextures.size() >= count;
-        for (int index = 0; matches && index < count; index++) {
-            matches = matchesOutput(interpolatedTextures.get(index), backbuffer);
-        }
-        if (matches) {
-            return;
-        }
-        device.getMainQueue().waitIdle();
-        for (VulkanTexture texture : interpolatedTextures) {
-            texture.destroy();
-        }
-        interpolatedTextures.clear();
-        for (int index = 0; index < count; index++) {
-            interpolatedTextures.add(createOutputTexture(
-                    device,
-                    backbuffer,
-                    "SRDlssGInterpolated-" + index
-            ));
-        }
-    }
-
-    private static VulkanTexture ensureRealOutputTexture(
-            VulkanDevice device,
-            VulkanTexture backbuffer
-    ) {
-        if (realOutputTexture != null && matchesOutput(realOutputTexture, backbuffer)) {
-            return realOutputTexture;
-        }
-        device.getMainQueue().waitIdle();
-        if (realOutputTexture != null) {
-            realOutputTexture.destroy();
-        }
-        realOutputTexture = createOutputTexture(device, backbuffer, "SRDlssGOutputReal");
-        return realOutputTexture;
-    }
-
-    private static boolean matchesOutput(VulkanTexture output, VulkanTexture template) {
-        return output.getDevice() == template.getDevice()
-                && output.getWidth() == template.getWidth()
-                && output.getHeight() == template.getHeight()
-                && output.getTextureFormat() == template.getTextureFormat();
     }
 
     private static VulkanTexture createOutputTexture(
             VulkanDevice device,
-            VulkanTexture template,
+            VulkanTexture source,
             String label
     ) {
         TextureDescription description = TextureDescription.create()
                 .type(TextureType.Texture2D)
-                .format(template.getTextureFormat())
-                .size(template.getWidth(), template.getHeight())
+                .format(source.getTextureFormat())
+                .size(source.getWidth(), source.getHeight())
                 .usages(TextureUsages.create()
                         .sampler()
                         .storage()
@@ -549,38 +537,71 @@ public final class NgxFrameGenerationAdapter {
         return (VulkanTexture) device.createTexture(description);
     }
 
-    private static void recordTransitionsToGeneral(
+    private static void releaseFeature(boolean quiet) {
+        requireNoLeasedSlots();
+        if (ngxFeature != null) {
+            int result = ngxFeature.release();
+            if (!NgxConstants.succeeded(result) && !quiet) {
+                Wisteria.LOGGER.warn("Failed to release the NGX DLSS-G feature. Result: {}", result);
+            }
+            ngxFeature = null;
+        }
+        if (ngxParameters != null) {
+            int result = ngxParameters.destroy();
+            if (!NgxConstants.succeeded(result) && !quiet) {
+                Wisteria.LOGGER.warn("Failed to destroy the NGX DLSS-G parameters. Result: {}", result);
+            }
+            ngxParameters = null;
+        }
+        destroyOutputSlots();
+        featureKey = null;
+        outputKey = null;
+    }
+
+    private static void destroyOutputSlots() {
+        for (OutputSlot slot : outputSlots) {
+            slot.destroy();
+        }
+        outputSlots.clear();
+    }
+
+    private static void requireNoLeasedSlots() {
+        for (OutputSlot slot : outputSlots) {
+            if (slot.leased) {
+                throw new IllegalStateException("NGX output slots are still leased");
+            }
+        }
+    }
+
+    private static List<LayoutTransition> recordTransitionsToGeneral(
             VulkanDevice device,
             long commandBuffer,
             VulkanTexture backbuffer,
             VulkanTexture hudless,
             VulkanTexture depth,
             VulkanTexture motionVectors,
-            int generatedFrameCount,
+            List<VulkanTexture> generatedOutputs,
             VulkanTexture realOutput
     ) {
         List<VulkanTexture> textures = new ArrayList<>();
-        Set<VulkanTexture> seen = Collections.newSetFromMap(new IdentityHashMap<>());
-        addIfNotGeneral(textures, seen, backbuffer);
-        addIfNotGeneral(textures, seen, hudless);
-        addIfNotGeneral(textures, seen, depth);
-        addIfNotGeneral(textures, seen, motionVectors);
-        for (int index = 0; index < generatedFrameCount; index++) {
-            addIfNotGeneral(textures, seen, interpolatedTextures.get(index));
+        addIfNotGeneral(textures, backbuffer);
+        addIfNotGeneral(textures, hudless);
+        addIfNotGeneral(textures, depth);
+        addIfNotGeneral(textures, motionVectors);
+        for (VulkanTexture output : generatedOutputs) {
+            addIfNotGeneral(textures, output);
         }
-        addIfNotGeneral(textures, seen, realOutput);
+        addIfNotGeneral(textures, realOutput);
         if (textures.isEmpty()) {
-            return;
+            return List.of();
         }
-
+        List<LayoutTransition> transitions = new ArrayList<>(textures.size());
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkImageMemoryBarrier.Buffer barriers = VkImageMemoryBarrier.calloc(
-                    textures.size(),
-                    stack
-            );
+            VkImageMemoryBarrier.Buffer barriers = VkImageMemoryBarrier.calloc(textures.size(), stack);
             for (int index = 0; index < textures.size(); index++) {
                 VulkanTexture texture = textures.get(index);
                 int oldLayout = texture.getCurrentLayout();
+                transitions.add(new LayoutTransition(texture, oldLayout));
                 barriers.get(index)
                         .sType(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER)
                         .srcAccessMask(oldLayout == VK_IMAGE_LAYOUT_UNDEFINED
@@ -609,71 +630,77 @@ public final class NgxFrameGenerationAdapter {
                     barriers
             );
         }
-
         for (VulkanTexture texture : textures) {
             texture.setCurrentLayout(VK_IMAGE_LAYOUT_GENERAL);
         }
+        return List.copyOf(transitions);
     }
 
-    private static void addIfNotGeneral(
-            List<VulkanTexture> textures,
-            Set<VulkanTexture> seen,
-            VulkanTexture texture
-    ) {
-        if (seen.add(texture) && texture.getCurrentLayout() != VK_IMAGE_LAYOUT_GENERAL) {
+    private static void restoreLayouts(List<LayoutTransition> transitions) {
+        for (LayoutTransition transition : transitions) {
+            transition.texture().setCurrentLayout(transition.oldLayout());
+        }
+    }
+
+    private static void addIfNotGeneral(List<VulkanTexture> textures, VulkanTexture texture) {
+        if (texture.getCurrentLayout() != VK_IMAGE_LAYOUT_GENERAL) {
             textures.add(texture);
         }
     }
 
-    private static void fillOptEvalParams(FGConstants constants, int generatedFrameCount) {
+    private static void fillOptEvalParams(
+            FGConstants constants,
+            int generatedFrameCount,
+            boolean reset
+    ) {
         ensureMatrixBuffers();
         putMatrix(cameraViewToClip, constants.cameraViewToClip());
         putMatrix(clipToCameraView, constants.clipToCameraView());
         putMatrix(clipToLensClip, constants.clipToLensClip());
         putMatrix(clipToPrevClip, constants.clipToPrevClip());
         putMatrix(prevClipToClip, constants.prevClipToClip());
-        OPT_EVAL_PARAMS.cameraViewToClip = cameraViewToClip;
-        OPT_EVAL_PARAMS.clipToCameraView = clipToCameraView;
-        OPT_EVAL_PARAMS.clipToLensClip = clipToLensClip;
-        OPT_EVAL_PARAMS.clipToPrevClip = clipToPrevClip;
-        OPT_EVAL_PARAMS.prevClipToClip = prevClipToClip;
-        OPT_EVAL_PARAMS.jitterOffset[0] = constants.jitterOffsetX();
-        OPT_EVAL_PARAMS.jitterOffset[1] = constants.jitterOffsetY();
-        OPT_EVAL_PARAMS.motionVectorScale[0] = constants.motionVectorScaleX();
-        OPT_EVAL_PARAMS.motionVectorScale[1] = constants.motionVectorScaleY();
-        OPT_EVAL_PARAMS.cameraPinholeOffset[0] = constants.cameraPinholeOffsetX();
-        OPT_EVAL_PARAMS.cameraPinholeOffset[1] = constants.cameraPinholeOffsetY();
-        OPT_EVAL_PARAMS.cameraPosition[0] = constants.cameraPosX();
-        OPT_EVAL_PARAMS.cameraPosition[1] = constants.cameraPosY();
-        OPT_EVAL_PARAMS.cameraPosition[2] = constants.cameraPosZ();
-        OPT_EVAL_PARAMS.cameraUp[0] = constants.cameraUpX();
-        OPT_EVAL_PARAMS.cameraUp[1] = constants.cameraUpY();
-        OPT_EVAL_PARAMS.cameraUp[2] = constants.cameraUpZ();
-        OPT_EVAL_PARAMS.cameraRight[0] = constants.cameraRightX();
-        OPT_EVAL_PARAMS.cameraRight[1] = constants.cameraRightY();
-        OPT_EVAL_PARAMS.cameraRight[2] = constants.cameraRightZ();
-        OPT_EVAL_PARAMS.cameraForward[0] = constants.cameraFwdX();
-        OPT_EVAL_PARAMS.cameraForward[1] = constants.cameraFwdY();
-        OPT_EVAL_PARAMS.cameraForward[2] = constants.cameraFwdZ();
-        OPT_EVAL_PARAMS.cameraNear = constants.cameraNear();
-        OPT_EVAL_PARAMS.cameraFar = constants.cameraFar();
-        OPT_EVAL_PARAMS.cameraFov = constants.cameraFov();
-        OPT_EVAL_PARAMS.cameraAspectRatio = constants.cameraAspectRatio();
-        OPT_EVAL_PARAMS.colorBuffersHdr = false;
-        OPT_EVAL_PARAMS.depthInverted = constants.depthInverted() != 0;
-        OPT_EVAL_PARAMS.cameraMotionIncluded = constants.cameraMotionIncluded() != 0;
-        OPT_EVAL_PARAMS.reset = constants.reset() != 0;
-        OPT_EVAL_PARAMS.automodeOverrideReset = false;
-        OPT_EVAL_PARAMS.notRenderingGameFrames = false;
-        OPT_EVAL_PARAMS.orthoProjection = constants.orthographicProjection() != 0;
-        OPT_EVAL_PARAMS.motionVectorsInvalidValue = constants.motionVectorsInvalidValue();
-        OPT_EVAL_PARAMS.motionVectorsDilated = constants.motionVectorsDilated() != 0;
-        OPT_EVAL_PARAMS.motionVectorsJittered = constants.motionVectorsJittered() != 0;
-        OPT_EVAL_PARAMS.menuDetectionEnabled = false;
-        OPT_EVAL_PARAMS.minRelativeLinearDepthObjectSeparation =
+        optEvalParams.cameraViewToClip = cameraViewToClip;
+        optEvalParams.clipToCameraView = clipToCameraView;
+        optEvalParams.clipToLensClip = clipToLensClip;
+        optEvalParams.clipToPrevClip = clipToPrevClip;
+        optEvalParams.prevClipToClip = prevClipToClip;
+        optEvalParams.jitterOffset[0] = constants.jitterOffsetX();
+        optEvalParams.jitterOffset[1] = constants.jitterOffsetY();
+        optEvalParams.motionVectorScale[0] = constants.motionVectorScaleX();
+        optEvalParams.motionVectorScale[1] = constants.motionVectorScaleY();
+        optEvalParams.cameraPinholeOffset[0] = constants.cameraPinholeOffsetX();
+        optEvalParams.cameraPinholeOffset[1] = constants.cameraPinholeOffsetY();
+        optEvalParams.cameraPosition[0] = constants.cameraPosX();
+        optEvalParams.cameraPosition[1] = constants.cameraPosY();
+        optEvalParams.cameraPosition[2] = constants.cameraPosZ();
+        optEvalParams.cameraUp[0] = constants.cameraUpX();
+        optEvalParams.cameraUp[1] = constants.cameraUpY();
+        optEvalParams.cameraUp[2] = constants.cameraUpZ();
+        optEvalParams.cameraRight[0] = constants.cameraRightX();
+        optEvalParams.cameraRight[1] = constants.cameraRightY();
+        optEvalParams.cameraRight[2] = constants.cameraRightZ();
+        optEvalParams.cameraForward[0] = constants.cameraFwdX();
+        optEvalParams.cameraForward[1] = constants.cameraFwdY();
+        optEvalParams.cameraForward[2] = constants.cameraFwdZ();
+        optEvalParams.cameraNear = constants.cameraNear();
+        optEvalParams.cameraFar = constants.cameraFar();
+        optEvalParams.cameraFov = constants.cameraFov();
+        optEvalParams.cameraAspectRatio = constants.cameraAspectRatio();
+        optEvalParams.colorBuffersHdr = false;
+        optEvalParams.depthInverted = constants.depthInverted() != 0;
+        optEvalParams.cameraMotionIncluded = constants.cameraMotionIncluded() != 0;
+        optEvalParams.reset = reset;
+        optEvalParams.automodeOverrideReset = false;
+        optEvalParams.notRenderingGameFrames = false;
+        optEvalParams.orthoProjection = constants.orthographicProjection() != 0;
+        optEvalParams.motionVectorsInvalidValue = constants.motionVectorsInvalidValue();
+        optEvalParams.motionVectorsDilated = constants.motionVectorsDilated() != 0;
+        optEvalParams.motionVectorsJittered = constants.motionVectorsJittered() != 0;
+        optEvalParams.menuDetectionEnabled = false;
+        optEvalParams.minRelativeLinearDepthObjectSeparation =
                 constants.minRelativeLinearDepthObjectSeparation();
-        OPT_EVAL_PARAMS.multiFrameCount = generatedFrameCount;
-        OPT_EVAL_PARAMS.multiFrameIndex = 1;
+        optEvalParams.multiFrameCount = generatedFrameCount;
+        optEvalParams.multiFrameIndex = 1;
     }
 
     private static NgxResourceVK createResource(VulkanTexture texture, boolean readWrite) {
@@ -725,6 +752,15 @@ public final class NgxFrameGenerationAdapter {
         buffer.flip();
     }
 
+    private static void requireFgThread() {
+        Thread current = Thread.currentThread();
+        if (fgThread == null) {
+            fgThread = current;
+        } else if (fgThread != current) {
+            throw new IllegalStateException("NGX feature/session access must stay on the FG thread");
+        }
+    }
+
     private static void requireNgxSuccess(String operation, int result) {
         if (!NgxConstants.succeeded(result)) {
             throw new IllegalStateException(operation + " failed. NGX result: " + result);
@@ -742,10 +778,129 @@ public final class NgxFrameGenerationAdapter {
         }
     }
 
-    public record PrepareResult(
-            List<VulkanTexture> generatedFrames,
-            VulkanTexture realFrame
-    ) {
+    private static final class OutputSlot {
+        private final List<VulkanTexture> generatedOutputs;
+        private final VulkanTexture realOutput;
+        private boolean leased;
+
+        private OutputSlot(List<VulkanTexture> generatedOutputs, VulkanTexture realOutput) {
+            this.generatedOutputs = List.copyOf(generatedOutputs);
+            this.realOutput = realOutput;
+        }
+
+        private boolean acquire() {
+            if (leased) {
+                return false;
+            }
+            leased = true;
+            return true;
+        }
+
+        private List<VulkanTexture> generatedOutputs(int count) {
+            return generatedOutputs.subList(0, count);
+        }
+
+        private VulkanTexture realOutput() {
+            return realOutput;
+        }
+
+        private ProviderOutputLease lease(
+                List<VulkanTexture> actualGeneratedOutputs,
+                List<LayoutTransition> initialLayouts
+        ) {
+            return new SlotLease(this, actualGeneratedOutputs, outputKey, initialLayouts);
+        }
+
+        private void abort() {
+            leased = false;
+        }
+
+        private void destroy() {
+            if (leased) {
+                throw new IllegalStateException("Cannot destroy an NGX output slot while leased");
+            }
+            for (VulkanTexture output : generatedOutputs) {
+                output.destroy();
+            }
+            realOutput.destroy();
+        }
+    }
+
+    private static final class SlotLease implements ProviderOutputLease {
+        private final OutputSlot slot;
+        private final List<VulkanTexture> generatedOutputs;
+        private final OutputKey outputKey;
+        private final List<LayoutTransition> initialLayouts;
+        private boolean released;
+
+        private SlotLease(
+                OutputSlot slot,
+                List<VulkanTexture> generatedOutputs,
+                SlotKey slotKey,
+                List<LayoutTransition> initialLayouts
+        ) {
+            if (slotKey == null) {
+                throw new IllegalStateException("NGX output key is unavailable");
+            }
+            this.slot = slot;
+            this.generatedOutputs = List.copyOf(generatedOutputs);
+            this.outputKey = new OutputKey(slotKey.width, slotKey.height, slotKey.format);
+            this.initialLayouts = List.copyOf(initialLayouts);
+        }
+
+        @Override
+        public List<VulkanTexture> generatedOutputs() {
+            return generatedOutputs;
+        }
+
+        @Override
+        public VulkanTexture realOutput() {
+            return slot.realOutput;
+        }
+
+        @Override
+        public FrameGenerationDispatchCompletion completion() {
+            return FrameGenerationDispatchCompletion.completed();
+        }
+
+        @Override
+        public OutputKey outputKey() {
+            return outputKey;
+        }
+
+        @Override
+        public boolean isReleased() {
+            return released;
+        }
+
+        @Override
+        public void abort() {
+            synchronized (NgxFrameGenerationAdapter.class) {
+                requireFgThread();
+                if (!released) {
+                    restoreLayouts(initialLayouts);
+                    released = true;
+                    slot.leased = false;
+                }
+            }
+        }
+
+        @Override
+        public void release() {
+            synchronized (NgxFrameGenerationAdapter.class) {
+                requireFgThread();
+                if (!released) {
+                    released = true;
+                    slot.leased = false;
+                }
+            }
+        }
+    }
+
+    private record LayoutTransition(VulkanTexture texture, int oldLayout) {
+    }
+
+    private record SlotKey(int width, int height, int format) {
     }
 
     private record FeatureKey(

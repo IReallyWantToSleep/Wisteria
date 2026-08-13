@@ -18,6 +18,6 @@
         "fabricloader": ">=${fabric_loader_version}",
         "minecraft": [${fabric_mc_range}],
         "java": ">=${java_version}",
-        "${sr_mod_id}": "*"
+        "${sr_mod_id}": ">=${sr_min_version}"
     }
 }
