@@ -52,12 +52,15 @@ import static org.lwjgl.vulkan.VK10.*;
  */
 public final class NgxFrameGenerationAdapter {
     private static final int MIN_WIDTH_OR_HEIGHT = 128;
-    private static final int OUTPUT_SLOT_COUNT = 3;
+    private static final int MIN_OUTPUT_SLOT_COUNT = 2;
+    // Mirrors AsyncFrameGenerationScheduler.PRESENT_QUEUE_CAPACITY, which is not public.
+    private static final int SCHEDULER_PRESENT_QUEUE_CAPACITY = 6;
     private static final int MAX_GENERATED_FRAMES = 5;
     private static final Set<String> REPORTED_FAILURES = ConcurrentHashMap.newKeySet();
 
-    private static boolean supportQueried;
-    private static int maxGeneratedFrameCount;
+    // Read without the class monitor by isAvailable()/supportedGeneratedFrameCount().
+    private static volatile boolean supportQueried;
+    private static volatile int maxGeneratedFrameCount;
     private static NgxParameters ngxParameters;
     private static NgxFeature ngxFeature;
     private static FeatureKey featureKey;
@@ -109,14 +112,23 @@ public final class NgxFrameGenerationAdapter {
         REPORTED_FAILURES.clear();
     }
 
-    public static synchronized boolean isAvailable() {
+    /**
+     * Deliberately not {@code synchronized}. The render thread reaches this on every queued
+     * frame through {@code FrameGeneration.plannedGeneratedFrameCount()}, while the FG
+     * thread holds this class's monitor for the whole of {@link #dispatchAsync} - and, when
+     * a session is created, across a blocking queue wait. Taking the monitor here would put
+     * the render thread back behind dispatch, which is the coupling application-managed
+     * dispatch exists to remove. Both fields are volatile; only the one-time query locks.
+     */
+    public static boolean isAvailable() {
         if (!supportQueried) {
             refreshSupport();
         }
         return maxGeneratedFrameCount > 0;
     }
 
-    public static synchronized int supportedGeneratedFrameCount() {
+    /** Lock-free for the same reason as {@link #isAvailable()}. */
+    public static int supportedGeneratedFrameCount() {
         if (!supportQueried) {
             refreshSupport();
         }
@@ -158,14 +170,14 @@ public final class NgxFrameGenerationAdapter {
 
             int generatedFrameCount = Math.min(
                     Math.min(request.requestedGeneratedFrameCount(), supportedGeneratedFrameCount()),
-                    MAX_GENERATED_FRAMES
+                    Math.min(MAX_GENERATED_FRAMES, request.commandBufferCount())
             );
             if (generatedFrameCount <= 0) {
                 return AsyncFrameGenerationDispatchResult.failed("NGX DLSS-G requested no generated frames");
             }
 
             boolean sessionCreated = ensureFeature(request.device(), backbuffer, depth);
-            OutputSlot slot = acquireOutputSlot(request, backbuffer);
+            OutputSlot slot = acquireOutputSlot(request, backbuffer, generatedFrameCount);
             if (slot == null) {
                 return AsyncFrameGenerationDispatchResult.failed("No reusable NGX DLSS-G output slot");
             }
@@ -192,11 +204,18 @@ public final class NgxFrameGenerationAdapter {
                         resetHistory
                 );
 
+                // One command buffer per generated frame. The scheduler submits them
+                // separately in index order, so generated frame k's present semaphore
+                // signals when its own evaluation retires instead of waiting for the whole
+                // batch - what the DLSS-FG programming guide asks for when it says the
+                // first generated frame must not wait for the later ones. The shared
+                // transitions above stay in request.commandBuffer(), which is index 0 and
+                // therefore submitted first.
                 for (int frameIndex = 1; frameIndex <= generatedFrameCount; frameIndex++) {
                     optEvalParams.multiFrameCount = generatedFrameCount;
                     optEvalParams.multiFrameIndex = frameIndex;
                     int result = evaluate(
-                            request.commandBuffer(),
+                            request.generatedFrameCommandBuffer(frameIndex - 1),
                             backbuffer,
                             depth,
                             motionVectors,
@@ -462,19 +481,33 @@ public final class NgxFrameGenerationAdapter {
 
     private static OutputSlot acquireOutputSlot(
             AsyncFrameGenerationDispatchRequest request,
-            VulkanTexture backbuffer
+            VulkanTexture backbuffer,
+            int generatedFrameCount
     ) {
         SlotKey desired = new SlotKey(
                 request.outputWidth(),
                 request.outputHeight(),
-                backbuffer.getTextureFormat().vk()
+                backbuffer.getTextureFormat().vk(),
+                generatedFrameCount
         );
         if (!desired.equals(outputKey)) {
-            requireNoLeasedSlots();
-            List<OutputSlot> replacementSlots = new ArrayList<>(OUTPUT_SLOT_COUNT);
+            if (hasLeasedSlots()) {
+                // Batches queued at the old size or multiplier are still presenting from
+                // these textures. Reporting no slot lets the scheduler take its Real-only
+                // path for a frame or two until they drain, which is cheaper and quieter
+                // than throwing out of dispatch.
+                return null;
+            }
+            int slotCount = outputSlotCount(generatedFrameCount);
+            List<OutputSlot> replacementSlots = new ArrayList<>(slotCount);
             try {
-                for (int index = 0; index < OUTPUT_SLOT_COUNT; index++) {
-                    replacementSlots.add(createOutputSlot(request.device(), backbuffer, index));
+                for (int index = 0; index < slotCount; index++) {
+                    replacementSlots.add(createOutputSlot(
+                            request.device(),
+                            backbuffer,
+                            index,
+                            generatedFrameCount
+                    ));
                 }
             } catch (RuntimeException | Error e) {
                 for (OutputSlot slot : replacementSlots) {
@@ -485,6 +518,13 @@ public final class NgxFrameGenerationAdapter {
             destroyOutputSlots();
             outputSlots.addAll(replacementSlots);
             outputKey = desired;
+            Wisteria.LOGGER.info(
+                    "Allocated {} DLSS-G output slots of {} interpolated frame(s) at {}x{}",
+                    slotCount,
+                    generatedFrameCount,
+                    desired.width(),
+                    desired.height()
+            );
         }
         for (OutputSlot slot : outputSlots) {
             if (slot.acquire()) {
@@ -494,11 +534,43 @@ public final class NgxFrameGenerationAdapter {
         return null;
     }
 
-    private static OutputSlot createOutputSlot(VulkanDevice device, VulkanTexture source, int index) {
-        List<VulkanTexture> generated = new ArrayList<>(MAX_GENERATED_FRAMES);
+    /**
+     * Slots are sized per multiplier rather than for the worst case: allocating
+     * {@link #MAX_GENERATED_FRAMES} outputs per slot would leave most of them untouched at
+     * 2x or 3x, which is where the setting usually sits.
+     * <p>
+     * The count mirrors how many batches the scheduler can have outstanding: its present
+     * queue holds {@code SCHEDULER_PRESENT_QUEUE_CAPACITY} frames, so that many batches of
+     * {@code generatedFrameCount + 1} can be queued, plus the one the present thread is
+     * draining. That constant is not public API - if Super Resolution grows the queue this
+     * only under-provisions, which costs a Real-only frame rather than correctness.
+     */
+    private static int outputSlotCount(int generatedFrameCount) {
+        return Math.max(
+                MIN_OUTPUT_SLOT_COUNT,
+                SCHEDULER_PRESENT_QUEUE_CAPACITY / (generatedFrameCount + 1) + 1
+        );
+    }
+
+    private static boolean hasLeasedSlots() {
+        for (OutputSlot slot : outputSlots) {
+            if (slot.leased) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static OutputSlot createOutputSlot(
+            VulkanDevice device,
+            VulkanTexture source,
+            int index,
+            int generatedFrameCount
+    ) {
+        List<VulkanTexture> generated = new ArrayList<>(generatedFrameCount);
         VulkanTexture real = null;
         try {
-            for (int outputIndex = 0; outputIndex < MAX_GENERATED_FRAMES; outputIndex++) {
+            for (int outputIndex = 0; outputIndex < generatedFrameCount; outputIndex++) {
                 generated.add(createOutputTexture(
                         device,
                         source,
@@ -900,7 +972,7 @@ public final class NgxFrameGenerationAdapter {
     private record LayoutTransition(VulkanTexture texture, int oldLayout) {
     }
 
-    private record SlotKey(int width, int height, int format) {
+    private record SlotKey(int width, int height, int format, int generatedFrameCount) {
     }
 
     private record FeatureKey(
