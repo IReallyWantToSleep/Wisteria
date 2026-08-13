@@ -273,7 +273,7 @@ final class StreamlineFrameGenerationAdapter {
         options.hudLessBufferFormat = desired.hudlessBufferFormat();
         options.flags = FLAG_RETAIN_RESOURCES_WHEN_OFF;
         options.queueParallelismMode = QUEUE_MODE_BLOCK_NO_CLIENT_QUEUES;
-        options.enableUserInterfaceRecomposition = 0;
+        options.enableUserInterfaceRecomposition = 1;
         options.onApiError = API_ERROR_LISTENER;
 
         int result;

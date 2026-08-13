@@ -10,10 +10,11 @@
 
 package org.ireallywanttosleep.wisteria.backend;
 
+import io.homo.superresolution.api.registry.AsyncFrameGenerationDispatchRequest;
+import io.homo.superresolution.api.registry.AsyncFrameGenerationDispatchResult;
+import io.homo.superresolution.api.registry.FrameGenerationExecutionModel;
 import io.homo.superresolution.api.registry.FrameGenerationProvider;
-import io.homo.superresolution.common.framegeneration.constants.FGConstants;
 import io.homo.superresolution.common.framegeneration.FrameGenerationMode;
-import io.homo.superresolution.common.framegeneration.FramePresentPlan;
 import io.homo.superresolution.common.presentation.capture.FrameResources;
 
 /**
@@ -24,8 +25,18 @@ import io.homo.superresolution.common.presentation.capture.FrameResources;
 public final class NgxFrameGenerationBackend implements FrameGenerationProvider {
 
     @Override
+    public FrameGenerationExecutionModel executionModel() {
+        return FrameGenerationExecutionModel.APPLICATION_MANAGED_ASYNC;
+    }
+
+    @Override
     public void initialize() {
         NgxFrameGenerationAdapter.initialize();
+    }
+
+    @Override
+    public void shutdownOnFrameGenerationThread() {
+        NgxFrameGenerationAdapter.shutdownOnFrameGenerationThread();
     }
 
     @Override
@@ -59,27 +70,10 @@ public final class NgxFrameGenerationBackend implements FrameGenerationProvider 
     }
 
     @Override
-    public FramePresentPlan prepareFrame(
-            FrameResources frameResources,
-            FGConstants constants,
-            FrameGenerationMode mode,
-            int colorWidth,
-            int colorHeight,
-            int colorFormat,
-            int backBufferCount,
-            long commandBuffer
+    public AsyncFrameGenerationDispatchResult dispatchAsync(
+            AsyncFrameGenerationDispatchRequest request
     ) {
-        NgxFrameGenerationAdapter.PrepareResult result = NgxFrameGenerationAdapter.prepareFrame(
-                frameResources,
-                constants,
-                mode,
-                colorWidth,
-                colorHeight,
-                commandBuffer
-        );
-        return result == null
-                ? FramePresentPlan.none()
-                : FramePresentPlan.generated(result.generatedFrames(), result.realFrame());
+        return NgxFrameGenerationAdapter.dispatchAsync(request);
     }
 
     @Override

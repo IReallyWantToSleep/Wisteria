@@ -3,6 +3,7 @@ package org.ireallywanttosleep.wisteria.backend;
 import io.homo.superresolution.api.SuperResolutionAPI;
 import io.homo.superresolution.api.event.FrameGenerationRegisterEvent;
 import io.homo.superresolution.api.registry.FrameGenerationDescription;
+import io.homo.superresolution.api.registry.FrameGenerationExecutionModel;
 import io.homo.superresolution.api.registry.FrameGenerationGroups;
 import io.homo.superresolution.api.registry.FrameGenerationRegistry;
 import io.homo.superresolution.api.registry.LowLatencyBinding;
@@ -57,10 +58,25 @@ public final class WisteriaFrameGeneration {
         SuperResolutionAPI.EVENT_BUS.addListener(FrameGenerationRegisterEvent.class, event -> {
             FrameGenerationRegistry.register(
                     FrameGenerationDescription.builder()
+                            .id(NGX_ID)
+                            .displayName(Component.literal("NVNGX"))
+                            .group(FrameGenerationGroups.DLSS_FG)
+                            .priority(200)
+                            .executionModel(FrameGenerationExecutionModel.APPLICATION_MANAGED_ASYNC)
+                            // Driving raw NVNGX underneath the Streamline interposer is
+                            // untested, so the negotiator keeps the two apart.
+                            .lowLatencyBinding(LowLatencyBinding.excludes(WisteriaLowLatency.REFLEX_STREAMLINE_ID))
+                            .addOptionDescription(dlssFgBackendOption())
+                            .providerFactory(NgxFrameGenerationBackend::new)
+                            .build()
+            );
+
+            FrameGenerationRegistry.register(
+                    FrameGenerationDescription.builder()
                             .id(STREAMLINE_ID)
                             .displayName(Component.literal("Streamline"))
                             .group(FrameGenerationGroups.DLSS_FG)
-                            .priority(200)
+                            .priority(100)
                             .requirement(Requirement.nothing().isTrue(
                                     () -> Streamline.isSupportedPlatform()
                                             && Streamline.isNativeAvailable()
@@ -71,19 +87,6 @@ public final class WisteriaFrameGeneration {
                             .lowLatencyBinding(LowLatencyBinding.requires(WisteriaLowLatency.REFLEX_STREAMLINE_ID))
                             .addOptionDescription(dlssFgBackendOption())
                             .providerFactory(StreamlineFrameGenerationBackend::new)
-                            .build()
-            );
-            FrameGenerationRegistry.register(
-                    FrameGenerationDescription.builder()
-                            .id(NGX_ID)
-                            .displayName(Component.literal("NVNGX"))
-                            .group(FrameGenerationGroups.DLSS_FG)
-                            .priority(100)
-                            // Driving raw NVNGX underneath the Streamline interposer is
-                            // untested, so the negotiator keeps the two apart.
-                            .lowLatencyBinding(LowLatencyBinding.excludes(WisteriaLowLatency.REFLEX_STREAMLINE_ID))
-                            .addOptionDescription(dlssFgBackendOption())
-                            .providerFactory(NgxFrameGenerationBackend::new)
                             .build()
             );
             Wisteria.LOGGER.info("Registered frame generation backends {} and {}", STREAMLINE_ID, NGX_ID);
