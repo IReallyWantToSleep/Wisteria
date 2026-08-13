@@ -69,7 +69,7 @@ fun fabricModrinthNotation(dependency: RuntimeModrinthDependency): String {
     }
 }
 
-val superResolutionModJar = providers.provider {
+fun superResolutionModJar(): File {
     val srModDir = rootProject.file("sr_mod")
     val prefix = "super_resolution-fabric-${cfg("sr_artifact_mc")}-"
     val variant = providers.gradleProperty("sr_mod_variant").orElse("opengl").get()
@@ -84,7 +84,7 @@ val superResolutionModJar = providers.provider {
                 + candidates.joinToString { it.name }.ifBlank { "<none>" }
         )
     }
-    candidates.single()
+    return candidates.single()
 }
 
 // Loom's configurations are addressed by name: it registers them too late in the Kotlin
@@ -98,6 +98,7 @@ dependencies {
     }
     add(modImplementationName(), "net.fabricmc:fabric-loader:${cfg("fabric_loader_version")}")
     add(modImplementationName(), "net.fabricmc.fabric-api:fabric-api:${cfg("fabric_api_version")}")
+    add(modImplementationName(), files(superResolutionModJar()))
 
     for (dependency in runtimeModrinthDependencies()) {
         add(modImplementationName(), fabricModrinthNotation(dependency))
@@ -106,18 +107,6 @@ dependencies {
     // Keep the shared output on the development runtime classpath as well. The loader jar
     // bundles it for distribution, but Loom's runClient uses classes directories directly.
     implementation(commonMain.output)
-}
-
-// Keep the full mod out of Gradle dependency resolution. Fabric Loader discovers and
-// remaps production mods from run/mods, so only runClient needs the local SR jar.
-val prepareSuperResolutionMod = tasks.register<Copy>("prepareSuperResolutionMod") {
-    from(superResolutionModJar)
-    into(layout.projectDirectory.dir("run/mods"))
-    rename { "super_resolution-dev.jar" }
-}
-
-tasks.named("runClient") {
-    dependsOn(prepareSuperResolutionMod)
 }
 
 // Bundle the shared module's classes and resources into the loader jar.
