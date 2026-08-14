@@ -14,7 +14,6 @@ env:
   # NVIDIA Streamline SDK release supplying the runtime DLLs that common/build.gradle.kts
   # syncs into the jar. Bump here; the cache key follows.
   STREAMLINE_VERSION: v2.12.0
-  SR_API_REF: dev-fg
 
 permissions:
   contents: write
@@ -26,13 +25,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Checkout Super Resolution API source
-        uses: actions/checkout@v4
-        with:
-          repository: IReallyWantToSleep/superresolution
-          ref: ${{ env.SR_API_REF }}
-          path: .ci/superresolution
 
       - name: Restore Streamline runtime
         id: streamline-cache
@@ -64,12 +56,6 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
-
-      - name: Publish Super Resolution Java 17 API locally
-        working-directory: .ci/superresolution
-        run: >-
-          bash ./gradlew :common:publishApiPublicationToMavenLocal
-          -Pminecraft_version_config=1.20.1
 
       - name: Build all versions
         env:
