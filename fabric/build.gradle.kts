@@ -21,6 +21,9 @@ val loom = extensions.getByType<net.fabricmc.loom.api.LoomGradleExtensionAPI>()
 fun modImplementationName(): String =
     listOf("modImplementation", "implementation").first { configurations.findByName(it) != null }
 
+fun modRuntimeOnlyName(): String =
+    listOf("modRuntimeOnly", "runtimeOnly").first { configurations.findByName(it) != null }
+
 data class RuntimeModrinthDependency(
     val name: String,
     val version: String,
@@ -69,7 +72,7 @@ fun fabricModrinthNotation(dependency: RuntimeModrinthDependency): String {
     }
 }
 
-fun superResolutionModJar(): File {
+fun superResolutionModJar(): File? {
     val srModDir = rootProject.file("sr_mod")
     val prefix = "super_resolution-fabric-${cfg("sr_artifact_mc")}-"
     val variant = providers.gradleProperty("sr_mod_variant").orElse("opengl").get()
@@ -77,15 +80,18 @@ fun superResolutionModJar(): File {
         ?.filter { it.isFile && it.name.startsWith(prefix) && it.name.endsWith(".$variant.jar") }
         ?.sortedBy { it.name }
         ?: emptyList()
-    if (candidates.size != 1) {
+    if (candidates.size > 1) {
         throw GradleException(
             "Expected exactly one Fabric Super Resolution jar matching "
                 + "$prefix*.$variant.jar in ${srModDir.absolutePath}, found: "
                 + candidates.joinToString { it.name }.ifBlank { "<none>" }
         )
     }
-    return candidates.single()
+    return candidates.singleOrNull()
 }
+
+fun superResolutionModrinthNotation(): String =
+    "maven.modrinth:${cfg("sr_modrinth_project_id")}:${cfg("sr_modrinth_version_id_fabric")}"
 
 // Loom's configurations are addressed by name: it registers them too late in the Kotlin
 // DSL accessor pass for the generated typed accessors to exist.
@@ -98,7 +104,12 @@ dependencies {
     }
     add(modImplementationName(), "net.fabricmc:fabric-loader:${cfg("fabric_loader_version")}")
     add(modImplementationName(), "net.fabricmc.fabric-api:fabric-api:${cfg("fabric_api_version")}")
-    add(modImplementationName(), files(superResolutionModJar()))
+    val localSuperResolutionMod = superResolutionModJar()
+    if (localSuperResolutionMod != null) {
+        add(modRuntimeOnlyName(), files(localSuperResolutionMod))
+    } else {
+        add(modRuntimeOnlyName(), superResolutionModrinthNotation())
+    }
 
     for (dependency in runtimeModrinthDependencies()) {
         add(modImplementationName(), fabricModrinthNotation(dependency))

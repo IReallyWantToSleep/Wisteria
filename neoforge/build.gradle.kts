@@ -59,7 +59,10 @@ fun neoForgeModrinthNotations(dependency: RuntimeModrinthDependency): List<Strin
     return listOf("maven.modrinth:${dependency.name}:${dependency.version}-neoforge,$minecraftVersion")
 }
 
-fun superResolutionModJar(): File {
+fun modRuntimeOnlyName(): String =
+    listOf("modRuntimeOnly", "runtimeOnly").first { configurations.findByName(it) != null }
+
+fun superResolutionModJar(): File? {
     val srModDir = rootProject.file("sr_mod")
     val prefix = "super_resolution-neoforge-${cfg("sr_artifact_mc")}-"
     val variant = providers.gradleProperty("sr_mod_variant").orElse("opengl").get()
@@ -67,15 +70,18 @@ fun superResolutionModJar(): File {
         ?.filter { it.isFile && it.name.startsWith(prefix) && it.name.endsWith(".$variant.jar") }
         ?.sortedBy { it.name }
         ?: emptyList()
-    if (candidates.size != 1) {
+    if (candidates.size > 1) {
         throw GradleException(
             "Expected exactly one NeoForge Super Resolution jar matching "
                 + "$prefix*.$variant.jar in ${srModDir.absolutePath}, found: "
                 + candidates.joinToString { it.name }.ifBlank { "<none>" }
         )
     }
-    return candidates.single()
+    return candidates.singleOrNull()
 }
+
+fun superResolutionModrinthNotation(): String =
+    "maven.modrinth:${cfg("sr_modrinth_project_id")}:${cfg("sr_modrinth_version_id_neoforge")}"
 
 neoForge {
     version = cfg("neoforge_version")
@@ -94,7 +100,12 @@ neoForge {
 }
 
 dependencies {
-    implementation(files(superResolutionModJar()))
+    val localSuperResolutionMod = superResolutionModJar()
+    if (localSuperResolutionMod != null) {
+        add(modRuntimeOnlyName(), files(localSuperResolutionMod))
+    } else {
+        add(modRuntimeOnlyName(), superResolutionModrinthNotation())
+    }
 
     for (dependency in runtimeModrinthDependencies()) {
         neoForgeModrinthNotations(dependency).forEach { implementation(it) }
