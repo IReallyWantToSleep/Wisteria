@@ -21,6 +21,7 @@ side = "CLIENT"
 [[dependencies.${mod_id}]]
 modId = "${sr_mod_id}"
 mandatory = true
-versionRange = "*"
-ordering = "BEFORE"
+versionRange = "[${sr_min_version},)"
+ordering = "AFTER"
 side = "CLIENT"
+

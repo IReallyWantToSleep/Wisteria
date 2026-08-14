@@ -72,3 +72,5 @@ tasks.named("runClient") {
 tasks.named<Jar>("jar") {
     from(commonMain.output)
 }
+
+
