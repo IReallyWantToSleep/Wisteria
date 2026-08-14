@@ -74,6 +74,16 @@ allprojects {
             mavenContent { snapshotsOnly() }
         }
     }
+
+    // The Super Resolution API is consumed as a -SNAPSHOT, and Gradle caches changing
+    // modules for 24 hours by default. On CI that combines with a restored dependency
+    // cache to pin a stale API for a whole day: a snapshot published minutes earlier is
+    // ignored and the build fails against symbols that already exist upstream. Re-check it
+    // every build instead. This only affects changing modules, so it is a no-op whenever
+    // sr_version points at a release.
+    configurations.all {
+        resolutionStrategy.cacheChangingModulesFor(0, "seconds")
+    }
 }
 
 subprojects {
