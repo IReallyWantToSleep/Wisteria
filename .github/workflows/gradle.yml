@@ -54,12 +54,12 @@ jobs:
             caches
             notifications
             wrapper
+          # Super Resolution's API is a -SNAPSHOT that moves whenever its dev branch does,
+          # but the dependency cache key does not change when it is republished. Caching it
+          # pins whichever build was current when the cache was first written, so the
+          # compile fails against symbols that already exist upstream.
           gradle-home-cache-excludes: |
             caches/build-cache-1
-            # Super Resolution's API is a -SNAPSHOT that moves whenever its dev branch does.
-            # The dependency cache key does not change when it is republished, so caching it
-            # pins whichever build was current the first time this cache was written and the
-            # compile then fails against symbols that already exist upstream.
             caches/modules-2/files-2.1/io.homo.superresolution
             caches/modules-2/metadata-*/descriptors/io.homo.superresolution
 
