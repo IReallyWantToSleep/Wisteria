@@ -56,6 +56,12 @@ jobs:
             wrapper
           gradle-home-cache-excludes: |
             caches/build-cache-1
+            # Super Resolution's API is a -SNAPSHOT that moves whenever its dev branch does.
+            # The dependency cache key does not change when it is republished, so caching it
+            # pins whichever build was current the first time this cache was written and the
+            # compile then fails against symbols that already exist upstream.
+            caches/modules-2/files-2.1/io.homo.superresolution
+            caches/modules-2/metadata-*/descriptors/io.homo.superresolution
 
       - name: Build
         id: build
@@ -64,7 +70,9 @@ jobs:
           # buildAllVersions runs each Minecraft version as a nested GradleBuild, and those
           # inherit the environment but not -P properties from the outer command line.
           ORG_GRADLE_PROJECT_streamline_bin_dir: ${{ github.workspace }}/streamline/bin/x64
-        run: ./gradlew buildAllVersions
+        # The API artifact must come from the repository, not a restored cache entry; the
+        # exclusions above cannot purge what earlier runs already saved.
+        run: ./gradlew buildAllVersions --refresh-dependencies
         # A version that fails to build must not cost us the jars of the ones that did, so
         # the upload steps run either way. The job is failed at the end instead.
         continue-on-error: true
