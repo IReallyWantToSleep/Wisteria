@@ -14,12 +14,19 @@ jobs:
     if: ${{ !contains(github.event.head_commit.message, 'SKIP') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+    # Put [NOCACHE] in the commit message to build with nothing restored and every
+    # dependency re-resolved. Caches key on inputs that do not change when a -SNAPSHOT
+    # dependency is republished, so a stale artifact can survive every ordinary fix; this
+    # is the escape hatch for that, and for any other "it only fails on CI" state.
+    env:
+      NO_CACHE: ${{ contains(github.event.head_commit.message, '[NOCACHE]') }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Restore Streamline runtime
         id: streamline-cache
+        if: ${{ env.NO_CACHE != 'true' }}
         uses: actions/cache@v4
         with:
           path: streamline/bin/x64
@@ -49,6 +56,9 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
+          # [NOCACHE] starts from an empty Gradle home and writes nothing back, so the run
+          # cannot inherit or extend a poisoned entry.
+          cache-disabled: ${{ env.NO_CACHE == 'true' }}
           cache-read-only: false
           gradle-home-cache-includes: |
             caches
@@ -70,9 +80,7 @@ jobs:
           # buildAllVersions runs each Minecraft version as a nested GradleBuild, and those
           # inherit the environment but not -P properties from the outer command line.
           ORG_GRADLE_PROJECT_streamline_bin_dir: ${{ github.workspace }}/streamline/bin/x64
-        # The API artifact must come from the repository, not a restored cache entry; the
-        # exclusions above cannot purge what earlier runs already saved.
-        run: ./gradlew buildAllVersions --refresh-dependencies
+        run: ./gradlew buildAllVersions ${{ env.NO_CACHE == 'true' && '--refresh-dependencies' || '' }}
         # A version that fails to build must not cost us the jars of the ones that did, so
         # the upload steps run either way. The job is failed at the end instead.
         continue-on-error: true
