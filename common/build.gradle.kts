@@ -4,13 +4,25 @@
 // API describes backends with Component display names.
 plugins {
     `java-library`
-    id("net.neoforged.moddev")
 }
 
 fun cfg(key: String): String = rootProject.extra[key] as String
 
-neoForge {
-    neoFormVersion = cfg("neoform_version")
+val legacyForgeTarget = rootProject.findProperty("legacy_forge")?.toString()?.toBoolean() ?: false
+if (legacyForgeTarget) {
+    apply(plugin = "net.neoforged.moddev.legacyforge")
+    extensions.configure<Any>("legacyForge") {
+        withGroovyBuilder {
+            setProperty("mcpVersion", cfg("minecraft_version"))
+        }
+    }
+} else {
+    apply(plugin = "net.neoforged.moddev")
+    extensions.configure<Any>("neoForge") {
+        withGroovyBuilder {
+            setProperty("neoFormVersion", cfg("neoform_version"))
+        }
+    }
 }
 
 dependencies {

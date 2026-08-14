@@ -1,0 +1,27 @@
+modLoader = "javafml"
+loaderVersion = "${forge_loader_range}"
+license = "${mod_license}"
+
+[[mods]]
+modId = "${mod_id}"
+version = "${mod_version}"
+displayName = "${mod_name}"
+authors = "${mod_authors}"
+description = '''
+NVIDIA frame generation and Reflex backends for Super Resolution, plus the Streamline runtime they need.
+'''
+
+[[dependencies.${mod_id}]]
+modId = "minecraft"
+mandatory = true
+versionRange = "${forge_mc_range}"
+ordering = "NONE"
+side = "CLIENT"
+
+[[dependencies.${mod_id}]]
+modId = "${sr_mod_id}"
+mandatory = true
+versionRange = "[${sr_min_version},)"
+ordering = "AFTER"
+side = "CLIENT"
+

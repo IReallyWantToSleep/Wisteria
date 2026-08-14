@@ -26,20 +26,19 @@ fun cfg(key: String): String = versionProperties.getProperty(key)
 /**
  * The Super Resolution API artifact Wisteria compiles against.
  *
- * One Maven coordinate serves every Minecraft version: the API's public signatures are
- * identical across them, the few Minecraft types they name (Component) keep the same
- * package on every version, and Super Resolution builds the artifact from its 1.21.1
- * configuration so the class files stay readable by Java 21 and Java 25 toolchains alike.
+ * The default Maven coordinate serves the modern Minecraft versions. A version file may
+ * override sr_version when that target needs a different bytecode level, such as the
+ * Java 17 API artifact used by Minecraft 1.20.1.
  *
  * To work against unpublished API changes, run `publishToMavenLocal` in the Super
  * Resolution project and set `sr_version` to that build - mavenLocal() is searched first.
  */
 fun superResolutionApi(): String {
-    val srVersion = providers.gradleProperty("sr_version").orNull?.takeIf { it.isNotBlank() }
+    val srVersion = cfg("sr_version").takeIf { it.isNotBlank() }
         ?: throw GradleException(
             "sr_version is not set. Point it at a published Super Resolution API version, "
                 + "or publish one locally with `./gradlew :common:publishApiPublicationToMavenLocal "
-                + "-Pminecraft_version_config=1.21.1` in the Super Resolution project."
+                + "-Pminecraft_version_config=1.20.1` in the Super Resolution project."
         )
     return "${cfg("sr_group")}:${cfg("sr_api_module")}:$srVersion"
 }
@@ -119,6 +118,7 @@ subprojects {
             "fabric_mc_range" to (versionProperties.getProperty("fabric_mc_range") ?: ""),
             "neoforge_mc_range" to (versionProperties.getProperty("neoforge_mc_range") ?: ""),
             "forge_mc_range" to (versionProperties.getProperty("forge_mc_range") ?: ""),
+            "forge_loader_range" to (versionProperties.getProperty("forge_loader_range") ?: ""),
             "fabric_loader_version" to (versionProperties.getProperty("fabric_loader_version") ?: "")
         )
         inputs.properties(expansions)
