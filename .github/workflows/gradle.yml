@@ -73,6 +73,18 @@ jobs:
             caches/modules-2/files-2.1/io.homo.superresolution
             caches/modules-2/metadata-*/descriptors/io.homo.superresolution
 
+      # Which API jar the runner actually gets, and whether it carries the async dispatch
+      # types. Local builds resolve a jar that has them; when CI disagrees this says so
+      # directly instead of leaving it to be inferred from compile errors.
+      - name: Report resolved Super Resolution API
+        continue-on-error: true
+        run: |
+          ./gradlew checkSuperResolutionApi --console=plain -q
+          for jar in $(find ~/.gradle/caches -name 'superresolution-api-*.jar' 2>/dev/null); do
+            echo "jar: $jar ($(stat -c%s "$jar") bytes)"
+            echo "  AsyncFrameGenerationDispatchRequest entries: $(unzip -l "$jar" | grep -c AsyncFrameGenerationDispatchRequest)"
+          done
+
       - name: Build
         id: build
         if: ${{ !cancelled() }}
