@@ -10,12 +10,12 @@
 
 package org.ireallywanttosleep.wisteria.backend;
 
-import io.homo.superresolution.api.registry.FrameGenerationProvider;
-import io.homo.superresolution.api.registry.LowLatencyGroups;
+import io.homo.superresolution.api.registry.framegeneration.FrameGenerationProvider;
+import io.homo.superresolution.api.registry.lowlatency.LowLatencyGroups;
 import io.homo.superresolution.common.config.SuperResolutionConfig;
 import io.homo.superresolution.common.framegeneration.FrameGenerationMode;
 import io.homo.superresolution.common.framegeneration.FramePresentPlan;
-import io.homo.superresolution.common.framegeneration.constants.FGConstants;
+import io.homo.superresolution.common.framegeneration.constants.FrameGenerationConstants;
 import io.homo.superresolution.common.lowlatency.nv.NVIDIAReflexMode;
 import io.homo.superresolution.common.presentation.capture.FrameResources;
 import io.homo.superresolution.core.streamline.Streamline;
@@ -56,7 +56,7 @@ public final class StreamlineFrameGenerationBackend implements FrameGenerationPr
     }
 
     @Override
-    public boolean dependenciesSatisfied() {
+    public boolean isDependenciesSatisfied() {
         // Streamline DLSS-G requires Reflex to drive its present pacing. The pairing with
         // the Streamline Reflex backend is the negotiator's job (see the lowLatencyBinding
         // in WisteriaFrameGeneration); what is left to check here is that Reflex is not
@@ -68,7 +68,7 @@ public final class StreamlineFrameGenerationBackend implements FrameGenerationPr
     @Override
     public FramePresentPlan prepareFrame(
             FrameResources frameResources,
-            FGConstants constants,
+            FrameGenerationConstants constants,
             FrameGenerationMode mode,
             int colorWidth,
             int colorHeight,

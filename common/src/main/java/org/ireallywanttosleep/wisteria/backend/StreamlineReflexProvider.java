@@ -10,8 +10,8 @@
 
 package org.ireallywanttosleep.wisteria.backend;
 
-import io.homo.superresolution.api.registry.LowLatencyMarker;
-import io.homo.superresolution.api.registry.LowLatencyProvider;
+import io.homo.superresolution.api.registry.lowlatency.LowLatencyMarker;
+import io.homo.superresolution.api.registry.lowlatency.LowLatencyProvider;
 import io.homo.superresolution.common.config.SuperResolutionConfig;
 import io.homo.superresolution.common.lowlatency.LowLatency;
 import io.homo.superresolution.core.streamline.Streamline;

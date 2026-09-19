@@ -2,10 +2,12 @@ package org.ireallywanttosleep.wisteria.backend;
 
 import io.homo.superresolution.api.SuperResolutionAPI;
 import io.homo.superresolution.api.event.LowLatencyRegisterEvent;
-import io.homo.superresolution.api.registry.LowLatencyDescription;
-import io.homo.superresolution.api.registry.LowLatencyGroups;
-import io.homo.superresolution.api.registry.LowLatencyRegistry;
+import io.homo.superresolution.api.registry.lowlatency.LowLatencyDescription;
+import io.homo.superresolution.api.registry.lowlatency.LowLatencyGroups;
+import io.homo.superresolution.api.registry.lowlatency.LowLatencyRegistry;
 import io.homo.superresolution.api.utils.Requirement;
+import io.homo.superresolution.common.presentation.PresentationBackendManager;
+import io.homo.superresolution.common.presentation.api.PresentationBackendType;
 import io.homo.superresolution.core.streamline.Streamline;
 import net.minecraft.network.chat.Component;
 import org.ireallywanttosleep.wisteria.Wisteria;
@@ -33,7 +35,8 @@ public final class WisteriaLowLatency {
                             .group(LowLatencyGroups.NV_REFLEX)
                             .priority(200)
                             .requirement(Requirement.nothing().isTrue(
-                                    () -> Streamline.isSupportedPlatform()
+                                    () -> PresentationBackendManager.isPresentationBackendAvailable(PresentationBackendType.VULKAN)
+                                            && Streamline.isSupportedPlatform()
                                             && Streamline.isNativeAvailable()
                                             && Streamline.isInitialized()
                             ))

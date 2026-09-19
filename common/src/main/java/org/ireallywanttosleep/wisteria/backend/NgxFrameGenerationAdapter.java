@@ -10,11 +10,11 @@
 
 package org.ireallywanttosleep.wisteria.backend;
 
-import io.homo.superresolution.api.registry.AsyncFrameGenerationDispatchRequest;
-import io.homo.superresolution.api.registry.AsyncFrameGenerationDispatchResult;
-import io.homo.superresolution.api.registry.FrameGenerationDispatchCompletion;
-import io.homo.superresolution.api.registry.ProviderOutputLease;
-import io.homo.superresolution.common.framegeneration.constants.FGConstants;
+import io.homo.superresolution.api.registry.framegeneration.AsyncFrameGenerationDispatchRequest;
+import io.homo.superresolution.api.registry.framegeneration.AsyncFrameGenerationDispatchResult;
+import io.homo.superresolution.api.registry.framegeneration.FrameGenerationDispatchCompletion;
+import io.homo.superresolution.api.registry.framegeneration.ProviderOutputLease;
+import io.homo.superresolution.common.framegeneration.constants.FrameGenerationConstants;
 import io.homo.superresolution.common.presentation.capture.FrameResources;
 import io.homo.superresolution.core.graphics.impl.texture.TextureDescription;
 import io.homo.superresolution.core.graphics.impl.texture.TextureType;
@@ -721,7 +721,7 @@ public final class NgxFrameGenerationAdapter {
     }
 
     private static void fillOptEvalParams(
-            FGConstants constants,
+            FrameGenerationConstants constants,
             int generatedFrameCount,
             boolean reset
     ) {

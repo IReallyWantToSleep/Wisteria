@@ -10,10 +10,10 @@
 
 package org.ireallywanttosleep.wisteria.backend;
 
-import io.homo.superresolution.api.registry.AsyncFrameGenerationDispatchRequest;
-import io.homo.superresolution.api.registry.AsyncFrameGenerationDispatchResult;
-import io.homo.superresolution.api.registry.FrameGenerationExecutionModel;
-import io.homo.superresolution.api.registry.FrameGenerationProvider;
+import io.homo.superresolution.api.registry.framegeneration.AsyncFrameGenerationDispatchRequest;
+import io.homo.superresolution.api.registry.framegeneration.AsyncFrameGenerationDispatchResult;
+import io.homo.superresolution.api.registry.framegeneration.FrameGenerationExecutionModel;
+import io.homo.superresolution.api.registry.framegeneration.FrameGenerationProvider;
 import io.homo.superresolution.common.framegeneration.FrameGenerationMode;
 import io.homo.superresolution.common.presentation.capture.FrameResources;
 
@@ -64,7 +64,7 @@ public final class NgxFrameGenerationBackend implements FrameGenerationProvider 
     }
 
     @Override
-    public boolean dependenciesSatisfied() {
+    public boolean isDependenciesSatisfied() {
         // No Reflex requirement: Linux has none, and the mod drives the pacing itself.
         return true;
     }

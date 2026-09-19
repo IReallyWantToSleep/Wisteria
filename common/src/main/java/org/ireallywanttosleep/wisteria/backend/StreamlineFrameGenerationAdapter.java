@@ -11,7 +11,7 @@
 package org.ireallywanttosleep.wisteria.backend;
 
 import io.homo.superresolution.common.framegeneration.FrameGenerationMode;
-import io.homo.superresolution.common.framegeneration.constants.FGConstants;
+import io.homo.superresolution.common.framegeneration.constants.FrameGenerationConstants;
 import io.homo.superresolution.common.presentation.capture.FrameResources;
 import io.homo.superresolution.core.graphics.impl.texture.TextureUsage;
 import io.homo.superresolution.core.graphics.vulkan.VulkanTexture;
@@ -90,7 +90,7 @@ final class StreamlineFrameGenerationAdapter {
 
     static synchronized boolean prepareFrame(
             FrameResources frameResources,
-            FGConstants constants,
+            FrameGenerationConstants constants,
             StreamlineTypes.FrameToken token,
             FrameGenerationMode mode,
             int colorWidth,
@@ -359,7 +359,7 @@ final class StreamlineFrameGenerationAdapter {
         return usage;
     }
 
-    private static StreamlineTypes.Constants toStreamlineConstants(FGConstants source) {
+    private static StreamlineTypes.Constants toStreamlineConstants(FrameGenerationConstants source) {
         StreamlineTypes.Constants constants = new StreamlineTypes.Constants();
         constants.cameraViewToClip = source.cameraViewToClip();
         constants.clipToCameraView = source.clipToCameraView();

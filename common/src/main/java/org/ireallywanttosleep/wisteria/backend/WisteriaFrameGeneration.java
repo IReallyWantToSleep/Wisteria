@@ -2,11 +2,11 @@ package org.ireallywanttosleep.wisteria.backend;
 
 import io.homo.superresolution.api.SuperResolutionAPI;
 import io.homo.superresolution.api.event.FrameGenerationRegisterEvent;
-import io.homo.superresolution.api.registry.FrameGenerationDescription;
-import io.homo.superresolution.api.registry.FrameGenerationExecutionModel;
-import io.homo.superresolution.api.registry.FrameGenerationGroups;
-import io.homo.superresolution.api.registry.FrameGenerationRegistry;
-import io.homo.superresolution.api.registry.LowLatencyBinding;
+import io.homo.superresolution.api.registry.framegeneration.FrameGenerationDescription;
+import io.homo.superresolution.api.registry.framegeneration.FrameGenerationExecutionModel;
+import io.homo.superresolution.api.registry.framegeneration.FrameGenerationGroups;
+import io.homo.superresolution.api.registry.framegeneration.FrameGenerationRegistry;
+import io.homo.superresolution.api.registry.lowlatency.LowLatencyBinding;
 import io.homo.superresolution.api.utils.Requirement;
 import io.homo.superresolution.common.config.ConfigSpecType;
 import io.homo.superresolution.common.config.special.SpecialConfigDescription;
