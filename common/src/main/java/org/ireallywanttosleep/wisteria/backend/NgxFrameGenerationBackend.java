@@ -10,12 +10,11 @@
 
 package org.ireallywanttosleep.wisteria.backend;
 
-import io.homo.superresolution.api.registry.framegeneration.AsyncFrameGenerationDispatchRequest;
-import io.homo.superresolution.api.registry.framegeneration.AsyncFrameGenerationDispatchResult;
+import io.homo.superresolution.api.registry.framegeneration.FrameGenerationDispatchInput;
+import io.homo.superresolution.api.registry.framegeneration.FrameGenerationDispatchResult;
 import io.homo.superresolution.api.registry.framegeneration.FrameGenerationExecutionModel;
 import io.homo.superresolution.api.registry.framegeneration.FrameGenerationProvider;
 import io.homo.superresolution.common.framegeneration.FrameGenerationMode;
-import io.homo.superresolution.common.presentation.capture.FrameResources;
 
 /**
  * Cross-platform NVNGX (raw DLSS-G) backend. Wraps {@link NgxFrameGenerationAdapter},
@@ -58,7 +57,7 @@ public final class NgxFrameGenerationBackend implements FrameGenerationProvider 
     public int presentationManagedGeneratedFrameCount(FrameGenerationMode mode) {
         // NGX hands the interpolated frames back for the swapchain to present.
         return Math.min(
-                Math.max(1, mode.generatedFrameCount()),
+                mode.generatedFrameCount(),
                 supportedGeneratedFrameCount()
         );
     }
@@ -70,15 +69,10 @@ public final class NgxFrameGenerationBackend implements FrameGenerationProvider 
     }
 
     @Override
-    public AsyncFrameGenerationDispatchResult dispatchAsync(
-            AsyncFrameGenerationDispatchRequest request
+    public FrameGenerationDispatchResult dispatchAsync(
+            FrameGenerationDispatchInput input
     ) {
-        return NgxFrameGenerationAdapter.dispatchAsync(request);
-    }
-
-    @Override
-    public void finishPresent(FrameResources frameResources, boolean frameGenerationActive) {
-        // The mod paces and presents NGX frames itself; nothing to report back.
+        return NgxFrameGenerationAdapter.dispatchAsync(input);
     }
 
     @Override

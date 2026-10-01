@@ -10,6 +10,8 @@
 
 package org.ireallywanttosleep.wisteria.backend;
 
+import io.homo.superresolution.api.registry.framegeneration.ExternalFrameGenerationDispatchInput;
+import io.homo.superresolution.api.registry.framegeneration.ExternalFrameGenerationDispatchResult;
 import io.homo.superresolution.common.framegeneration.FrameGenerationMode;
 import io.homo.superresolution.common.framegeneration.constants.FrameGenerationConstants;
 import io.homo.superresolution.common.presentation.capture.FrameResources;
@@ -88,29 +90,26 @@ final class StreamlineFrameGenerationAdapter {
         return minimumWidthOrHeight;
     }
 
-    static synchronized boolean prepareFrame(
-            FrameResources frameResources,
-            FrameGenerationConstants constants,
-            StreamlineTypes.FrameToken token,
-            FrameGenerationMode mode,
-            int colorWidth,
-            int colorHeight,
-            int colorFormat,
-            int backBufferCount,
-            long commandBuffer
+    static synchronized ExternalFrameGenerationDispatchResult prepareExternalFrame(
+            ExternalFrameGenerationDispatchInput input
     ) {
         StreamlineSession session = sessionOrNull();
+        FrameResources frameResources = input.frameResources();
+        FrameGenerationConstants constants = input.constants();
+        FrameGenerationMode mode = input.mode();
+        int colorWidth = input.colorWidth();
+        int colorHeight = input.colorHeight();
+        int colorFormat = input.colorFormat();
+        int backBufferCount = input.backBufferCount();
+        long commandBuffer = input.vkCommandBuffer();
+        StreamlineTypes.FrameToken token = Streamline.currentFrame();
         VulkanTexture hudlessColor = frameResources.hudlessColorVulkanTexture();
         VulkanTexture depth = frameResources.depthVulkanTexture();
         VulkanTexture motionVectors = frameResources.motionVectorVulkanTexture();
         if (session == null
-                || constants == null
                 || token == null
                 || token.nativeHandle == 0L
                 || token.frameIndex != frameResources.logicalFrameIndex()
-                || hudlessColor == null
-                || depth == null
-                || motionVectors == null
                 || hudlessColor.getWidth() != colorWidth
                 || hudlessColor.getHeight() != colorHeight
                 || depth.getWidth() != motionVectors.getWidth()
@@ -118,7 +117,7 @@ final class StreamlineFrameGenerationAdapter {
                 || colorWidth < minimumWidthOrHeight()
                 || colorHeight < minimumWidthOrHeight()) {
             disable();
-            return false;
+            return ExternalFrameGenerationDispatchResult.INACTIVE;
         }
 
         int constantsResult = session.setConstants(
@@ -129,7 +128,7 @@ final class StreamlineFrameGenerationAdapter {
         if (constantsResult != 0) {
             reportResultFailure("slSetConstants", constantsResult, frameResources.logicalFrameIndex());
             disable();
-            return false;
+            return ExternalFrameGenerationDispatchResult.INACTIVE;
         }
 
         StreamlineTypes.ResourceTag[] tags = {
@@ -146,7 +145,7 @@ final class StreamlineFrameGenerationAdapter {
         if (tagResult != 0) {
             reportResultFailure("slSetTagForFrame", tagResult, frameResources.logicalFrameIndex());
             disable();
-            return false;
+            return ExternalFrameGenerationDispatchResult.INACTIVE;
         }
 
         boolean applied = applyOptions(new DlssGOptionsKey(
@@ -165,11 +164,16 @@ final class StreamlineFrameGenerationAdapter {
         if (!applied) {
             disable();
         }
-        return applied;
+        return applied
+                ? ExternalFrameGenerationDispatchResult.active()
+                : ExternalFrameGenerationDispatchResult.INACTIVE;
     }
 
-    static synchronized void finishPresent(FrameResources frameResources, boolean frameGenerationEnabled) {
-        if (!frameGenerationEnabled || frameResources == null || !frameResources.isSubmitted()) {
+    static synchronized void finishExternalFrame(
+            FrameResources frameResources,
+            ExternalFrameGenerationDispatchResult result
+    ) {
+        if (!result.frameGenerationActive() || !frameResources.isSubmitted()) {
             return;
         }
         StreamlineSession session = sessionOrNull();
@@ -183,19 +187,19 @@ final class StreamlineFrameGenerationAdapter {
         }
 
         StreamlineTypes.DlssGState state = new StreamlineTypes.DlssGState();
-        int result;
+        int stateResult;
         try {
-            result = session.dlssGGetState(
+            stateResult = session.dlssGGetState(
                     new StreamlineTypes.Viewport(VIEWPORT),
                     state,
                     null
             );
-        } catch (Throwable throwable) {
+        } catch (RuntimeException throwable) {
             reportFailureOnce("finish-present-exception", "slDLSSGGetState threw an exception", throwable);
             return;
         }
-        if (result != 0) {
-            reportResultFailure("slDLSSGGetState", result, frameResources.logicalFrameIndex());
+        if (stateResult != 0) {
+            reportResultFailure("slDLSSGGetState", stateResult, frameResources.logicalFrameIndex());
             return;
         }
 
@@ -239,7 +243,7 @@ final class StreamlineFrameGenerationAdapter {
                         null
                 );
             }
-        } catch (Throwable throwable) {
+        } catch (RuntimeException throwable) {
             reportFailureOnce("support-exception", "Failed to query DLSS-G support", throwable);
         }
     }
@@ -279,7 +283,7 @@ final class StreamlineFrameGenerationAdapter {
         int result;
         try {
             result = session.dlssGSetOptions(new StreamlineTypes.Viewport(VIEWPORT), options);
-        } catch (Throwable throwable) {
+        } catch (RuntimeException throwable) {
             reportFailureOnce("options-exception", "slDLSSGSetOptions threw an exception", throwable);
             return false;
         }

@@ -39,7 +39,7 @@ public final class StreamlineNativeExtractor {
             Files.createDirectories(targetDirectory);
             for (Entry entry : entries) {
                 Path target = targetDirectory.resolve(entry.name);
-                if (Files.isRegularFile(target) && Files.size(target) == entry.size) {
+                if (Files.isRegularFile(target)) {
                     continue;
                 }
                 try (InputStream source = open(entry.name)) {
@@ -71,10 +71,7 @@ public final class StreamlineNativeExtractor {
                     continue;
                 }
                 int separator = trimmed.lastIndexOf(' ');
-                entries.add(new Entry(
-                        trimmed.substring(0, separator),
-                        Long.parseLong(trimmed.substring(separator + 1))
-                ));
+                entries.add(new Entry(trimmed.substring(0, separator)));
             }
         } catch (IOException | RuntimeException failure) {
             Wisteria.LOGGER.error("Failed to read the Streamline runtime index", failure);
@@ -87,6 +84,6 @@ public final class StreamlineNativeExtractor {
         return StreamlineNativeExtractor.class.getResourceAsStream(RESOURCE_ROOT + name);
     }
 
-    private record Entry(String name, long size) {
+    private record Entry(String name) {
     }
 }

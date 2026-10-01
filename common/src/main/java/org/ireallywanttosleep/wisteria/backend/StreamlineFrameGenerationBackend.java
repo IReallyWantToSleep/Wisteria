@@ -10,24 +10,27 @@
 
 package org.ireallywanttosleep.wisteria.backend;
 
+import io.homo.superresolution.api.registry.framegeneration.ExternalFrameGenerationDispatchInput;
+import io.homo.superresolution.api.registry.framegeneration.ExternalFrameGenerationDispatchResult;
+import io.homo.superresolution.api.registry.framegeneration.FrameGenerationExecutionModel;
 import io.homo.superresolution.api.registry.framegeneration.FrameGenerationProvider;
 import io.homo.superresolution.api.registry.lowlatency.LowLatencyGroups;
 import io.homo.superresolution.common.config.SuperResolutionConfig;
 import io.homo.superresolution.common.framegeneration.FrameGenerationMode;
-import io.homo.superresolution.common.framegeneration.FramePresentPlan;
-import io.homo.superresolution.common.framegeneration.constants.FrameGenerationConstants;
 import io.homo.superresolution.common.lowlatency.nv.NVIDIAReflexMode;
 import io.homo.superresolution.common.presentation.capture.FrameResources;
-import io.homo.superresolution.core.streamline.Streamline;
-import io.homo.superresolution.core.streamline.StreamlineTypes;
 
 /**
  * Streamline (sl.dlss_g) backend, Windows-only. Wraps
  * {@link StreamlineFrameGenerationAdapter}; the Streamline interposer produces and
- * presents the interpolated frames itself, so the plan carries no frames for the
- * swapchain.
+ * presents the interpolated frames itself.
  */
 public final class StreamlineFrameGenerationBackend implements FrameGenerationProvider {
+
+    @Override
+    public FrameGenerationExecutionModel executionModel() {
+        return FrameGenerationExecutionModel.EXTERNAL_INTERPOSER;
+    }
 
     @Override
     public void initialize() {
@@ -66,40 +69,18 @@ public final class StreamlineFrameGenerationBackend implements FrameGenerationPr
     }
 
     @Override
-    public FramePresentPlan prepareFrame(
-            FrameResources frameResources,
-            FrameGenerationConstants constants,
-            FrameGenerationMode mode,
-            int colorWidth,
-            int colorHeight,
-            int colorFormat,
-            int backBufferCount,
-            long commandBuffer
+    public ExternalFrameGenerationDispatchResult prepareExternalFrame(
+            ExternalFrameGenerationDispatchInput input
     ) {
-        StreamlineTypes.FrameToken token = Streamline.currentFrame();
-        if (token == null
-                || token.nativeHandle == 0L
-                || token.frameIndex != frameResources.logicalFrameIndex()) {
-            StreamlineFrameGenerationAdapter.disable();
-            return FramePresentPlan.none();
-        }
-        boolean prepared = StreamlineFrameGenerationAdapter.prepareFrame(
-                frameResources,
-                constants,
-                token,
-                mode,
-                colorWidth,
-                colorHeight,
-                colorFormat,
-                backBufferCount,
-                commandBuffer
-        );
-        return prepared ? FramePresentPlan.externallyPresented() : FramePresentPlan.none();
+        return StreamlineFrameGenerationAdapter.prepareExternalFrame(input);
     }
 
     @Override
-    public void finishPresent(FrameResources frameResources, boolean frameGenerationActive) {
-        StreamlineFrameGenerationAdapter.finishPresent(frameResources, frameGenerationActive);
+    public void finishExternalFrame(
+            FrameResources frameResources,
+            ExternalFrameGenerationDispatchResult result
+    ) {
+        StreamlineFrameGenerationAdapter.finishExternalFrame(frameResources, result);
     }
 
     @Override

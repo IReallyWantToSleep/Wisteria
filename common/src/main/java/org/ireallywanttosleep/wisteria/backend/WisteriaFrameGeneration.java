@@ -26,7 +26,7 @@ import java.util.Optional;
  * <p>
  * Both backends implement DLSS Frame Generation, so both join
  * {@link FrameGenerationGroups#DLSS_FG}: the user picks the algorithm, and SR's negotiator
- * picks whichever backend is usable, preferring Streamline.
+ * picks whichever backend is usable according to priority.
  */
 public final class WisteriaFrameGeneration {
     /** DLSS-G through the Streamline interposer, which presents the generated frames itself. */
@@ -77,6 +77,7 @@ public final class WisteriaFrameGeneration {
                             .displayName(Component.literal("Streamline"))
                             .group(FrameGenerationGroups.DLSS_FG)
                             .priority(100)
+                            .executionModel(FrameGenerationExecutionModel.EXTERNAL_INTERPOSER)
                             .requirement(Requirement.nothing().isTrue(
                                     () -> Streamline.isSupportedPlatform()
                                             && Streamline.isNativeAvailable()

@@ -10,10 +10,10 @@
 
 package org.ireallywanttosleep.wisteria.backend;
 
-import io.homo.superresolution.api.registry.framegeneration.AsyncFrameGenerationDispatchRequest;
-import io.homo.superresolution.api.registry.framegeneration.AsyncFrameGenerationDispatchResult;
+import io.homo.superresolution.api.registry.framegeneration.FrameGenerationDispatchInput;
+import io.homo.superresolution.api.registry.framegeneration.FrameGenerationDispatchResult;
 import io.homo.superresolution.api.registry.framegeneration.FrameGenerationDispatchCompletion;
-import io.homo.superresolution.api.registry.framegeneration.ProviderOutputLease;
+import io.homo.superresolution.api.registry.framegeneration.FrameGenerationProviderOutput;
 import io.homo.superresolution.common.framegeneration.constants.FrameGenerationConstants;
 import io.homo.superresolution.common.presentation.capture.FrameResources;
 import io.homo.superresolution.core.graphics.impl.texture.TextureDescription;
@@ -53,8 +53,8 @@ import static org.lwjgl.vulkan.VK10.*;
 public final class NgxFrameGenerationAdapter {
     private static final int MIN_WIDTH_OR_HEIGHT = 128;
     private static final int MIN_OUTPUT_SLOT_COUNT = 2;
-    // Mirrors AsyncFrameGenerationScheduler.PRESENT_QUEUE_CAPACITY, which is not public.
-    private static final int SCHEDULER_PRESENT_QUEUE_CAPACITY = 6;
+    // Mirrors AsyncFramePresenter.PRESENTATION_QUEUE_CAPACITY, which is not public.
+    private static final int PRESENTATION_QUEUE_CAPACITY = 6;
     private static final int MAX_GENERATED_FRAMES = 5;
     private static final Set<String> REPORTED_FAILURES = ConcurrentHashMap.newKeySet();
 
@@ -88,7 +88,7 @@ public final class NgxFrameGenerationAdapter {
     }
 
     /**
-     * Terminal thread-affine teardown, invoked by the shared scheduler after every output
+     * Terminal thread-affine teardown, invoked by the shared presenter after every output
      * lease has drained and its FG submission completion has been awaited.
      */
     public static synchronized void shutdownOnFrameGenerationThread() {
@@ -140,20 +140,17 @@ public final class NgxFrameGenerationAdapter {
     }
 
     /**
-     * Records one complete NGX dispatch into the scheduler-owned FG command buffer. Failed
-     * results intentionally contain neither an output nor a lease, so the scheduler can use
+     * Records one complete NGX dispatch into the worker-owned FG command buffers. Failed
+     * results intentionally contain neither an output nor a lease, so the worker can use
      * its single Real-only fallback path.
      */
-    public static synchronized AsyncFrameGenerationDispatchResult dispatchAsync(
-            AsyncFrameGenerationDispatchRequest request
+    public static synchronized FrameGenerationDispatchResult dispatchAsync(
+            FrameGenerationDispatchInput request
     ) {
         requireFgThread();
-        if (request == null) {
-            return AsyncFrameGenerationDispatchResult.failed("NGX dispatch request is null");
-        }
         try {
             if (!isAvailable()) {
-                return AsyncFrameGenerationDispatchResult.failed("NGX DLSS-G is unavailable");
+                return FrameGenerationDispatchResult.failed("NGX DLSS-G is unavailable");
             }
 
             FrameResources frameResources = request.frameResources();
@@ -163,7 +160,7 @@ public final class NgxFrameGenerationAdapter {
             VulkanTexture motionVectors = frameResources.motionVectorVulkanTexture();
             String inputFailure = inputFailureReason(request, backbuffer, hudless, depth, motionVectors);
             if (inputFailure != null) {
-                return AsyncFrameGenerationDispatchResult.failed(
+                return FrameGenerationDispatchResult.failed(
                         "NGX DLSS-G frame inputs are incompatible: " + inputFailure
                 );
             }
@@ -173,13 +170,13 @@ public final class NgxFrameGenerationAdapter {
                     Math.min(MAX_GENERATED_FRAMES, request.commandBufferCount())
             );
             if (generatedFrameCount <= 0) {
-                return AsyncFrameGenerationDispatchResult.failed("NGX DLSS-G requested no generated frames");
+                return FrameGenerationDispatchResult.failed("NGX DLSS-G requested no generated frames");
             }
 
             boolean sessionCreated = ensureFeature(request.device(), backbuffer, depth);
             OutputSlot slot = acquireOutputSlot(request, backbuffer, generatedFrameCount);
             if (slot == null) {
-                return AsyncFrameGenerationDispatchResult.failed("No reusable NGX DLSS-G output slot");
+                return FrameGenerationDispatchResult.failed("No reusable NGX DLSS-G output slot");
             }
 
             List<LayoutTransition> layoutTransitions = List.of();
@@ -204,7 +201,7 @@ public final class NgxFrameGenerationAdapter {
                         resetHistory
                 );
 
-                // One command buffer per generated frame. The scheduler submits them
+                // One command buffer per generated frame. The worker submits them
                 // separately in index order, so generated frame k's present semaphore
                 // signals when its own evaluation retires instead of waiting for the whole
                 // batch - what the DLSS-FG programming guide asks for when it says the
@@ -215,7 +212,7 @@ public final class NgxFrameGenerationAdapter {
                     optEvalParams.multiFrameCount = generatedFrameCount;
                     optEvalParams.multiFrameIndex = frameIndex;
                     int result = evaluate(
-                            request.generatedFrameCommandBuffer(frameIndex - 1),
+                            request.dispatchCommandBuffer(frameIndex - 1),
                             backbuffer,
                             depth,
                             motionVectors,
@@ -233,7 +230,7 @@ public final class NgxFrameGenerationAdapter {
                         historyInvalid = true;
                         restoreLayouts(layoutTransitions);
                         slot.abort();
-                        return AsyncFrameGenerationDispatchResult.failed(
+                        return FrameGenerationDispatchResult.failed(
                                 "NGX DLSS-G evaluation failed with result=" + result
                         );
                     }
@@ -243,26 +240,26 @@ public final class NgxFrameGenerationAdapter {
                 }
                 realOutput.setCurrentLayout(VK_IMAGE_LAYOUT_GENERAL);
                 historyInvalid = false;
-                return AsyncFrameGenerationDispatchResult.success(
+                return FrameGenerationDispatchResult.success(
                         generatedFrameCount,
                         slot.lease(generatedOutputs, layoutTransitions),
                         resetHistory
-                                ? AsyncFrameGenerationDispatchResult.HistoryDisposition.RESET
+                                ? FrameGenerationDispatchResult.HistoryDisposition.RESET
                                 : sessionCreated
-                                ? AsyncFrameGenerationDispatchResult.HistoryDisposition.SEEDED
-                                : AsyncFrameGenerationDispatchResult.HistoryDisposition.UNCHANGED
+                                ? FrameGenerationDispatchResult.HistoryDisposition.SEEDED
+                                : FrameGenerationDispatchResult.HistoryDisposition.UNCHANGED
                 );
-            } catch (Throwable throwable) {
+            } catch (RuntimeException throwable) {
                 restoreLayouts(layoutTransitions);
                 slot.abort();
                 historyInvalid = true;
                 reportFailureOnce("dispatch", "NGX DLSS-G dispatch failed", throwable);
-                return AsyncFrameGenerationDispatchResult.failed("NGX DLSS-G dispatch failed");
+                return FrameGenerationDispatchResult.failed("NGX DLSS-G dispatch failed");
             }
-        } catch (Throwable throwable) {
+        } catch (RuntimeException throwable) {
             historyInvalid = true;
             reportFailureOnce("dispatch-setup", "NGX DLSS-G dispatch setup failed", throwable);
-            return AsyncFrameGenerationDispatchResult.failed("NGX DLSS-G dispatch setup failed");
+            return FrameGenerationDispatchResult.failed("NGX DLSS-G dispatch setup failed");
         }
     }
 
@@ -271,24 +268,12 @@ public final class NgxFrameGenerationAdapter {
     }
 
     private static String inputFailureReason(
-            AsyncFrameGenerationDispatchRequest request,
+            FrameGenerationDispatchInput request,
             VulkanTexture backbuffer,
             VulkanTexture hudless,
             VulkanTexture depth,
             VulkanTexture motionVectors
     ) {
-        if (backbuffer == null) {
-            return "backbuffer is missing";
-        }
-        if (hudless == null) {
-            return "hudless color is missing";
-        }
-        if (depth == null) {
-            return "depth is missing";
-        }
-        if (motionVectors == null) {
-            return "motion vectors are missing";
-        }
         if (backbuffer.getWidth() != request.outputWidth()
                 || backbuffer.getHeight() != request.outputHeight()) {
             return "backbuffer extent "
@@ -480,7 +465,7 @@ public final class NgxFrameGenerationAdapter {
     }
 
     private static OutputSlot acquireOutputSlot(
-            AsyncFrameGenerationDispatchRequest request,
+            FrameGenerationDispatchInput request,
             VulkanTexture backbuffer,
             int generatedFrameCount
     ) {
@@ -493,7 +478,7 @@ public final class NgxFrameGenerationAdapter {
         if (!desired.equals(outputKey)) {
             if (hasLeasedSlots()) {
                 // Batches queued at the old size or multiplier are still presenting from
-                // these textures. Reporting no slot lets the scheduler take its Real-only
+                // these textures. Reporting no slot lets the worker take its Real-only
                 // path for a frame or two until they drain, which is cheaper and quieter
                 // than throwing out of dispatch.
                 return null;
@@ -539,7 +524,7 @@ public final class NgxFrameGenerationAdapter {
      * {@link #MAX_GENERATED_FRAMES} outputs per slot would leave most of them untouched at
      * 2x or 3x, which is where the setting usually sits.
      * <p>
-     * The count mirrors how many batches the scheduler can have outstanding: its present
+     * The count mirrors how many batches the presenter can have outstanding: its presentation
      * queue holds {@code SCHEDULER_PRESENT_QUEUE_CAPACITY} frames, so that many batches of
      * {@code generatedFrameCount + 1} can be queued, plus the one the present thread is
      * draining. That constant is not public API - if Super Resolution grows the queue this
@@ -548,7 +533,7 @@ public final class NgxFrameGenerationAdapter {
     private static int outputSlotCount(int generatedFrameCount) {
         return Math.max(
                 MIN_OUTPUT_SLOT_COUNT,
-                SCHEDULER_PRESENT_QUEUE_CAPACITY / (generatedFrameCount + 1) + 1
+                PRESENTATION_QUEUE_CAPACITY / (generatedFrameCount + 1) + 1
         );
     }
 
@@ -876,7 +861,7 @@ public final class NgxFrameGenerationAdapter {
             return realOutput;
         }
 
-        private ProviderOutputLease lease(
+        private FrameGenerationProviderOutput lease(
                 List<VulkanTexture> actualGeneratedOutputs,
                 List<LayoutTransition> initialLayouts
         ) {
@@ -898,7 +883,7 @@ public final class NgxFrameGenerationAdapter {
         }
     }
 
-    private static final class SlotLease implements ProviderOutputLease {
+    private static final class SlotLease implements FrameGenerationProviderOutput {
         private final OutputSlot slot;
         private final List<VulkanTexture> generatedOutputs;
         private final OutputKey outputKey;
@@ -911,9 +896,6 @@ public final class NgxFrameGenerationAdapter {
                 SlotKey slotKey,
                 List<LayoutTransition> initialLayouts
         ) {
-            if (slotKey == null) {
-                throw new IllegalStateException("NGX output key is unavailable");
-            }
             this.slot = slot;
             this.generatedOutputs = List.copyOf(generatedOutputs);
             this.outputKey = new OutputKey(slotKey.width, slotKey.height, slotKey.format);

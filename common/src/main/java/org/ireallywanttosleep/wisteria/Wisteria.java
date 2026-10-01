@@ -1,8 +1,6 @@
 package org.ireallywanttosleep.wisteria;
 
 import io.homo.superresolution.api.StreamlineDistribution;
-import io.homo.superresolution.common.config.SuperResolutionConfig;
-import io.homo.superresolution.common.presentation.vulkan.VulkanPresentationFeature;
 import io.homo.superresolution.core.SuperResolutionConstants;
 import org.ireallywanttosleep.wisteria.backend.WisteriaFrameGeneration;
 import org.ireallywanttosleep.wisteria.backend.WisteriaLowLatency;
@@ -45,13 +43,8 @@ public final class Wisteria {
         LOGGER.info("Wisteria initializing");
         // Extraction itself is deferred: SR only asks for the directory if it decides to
         // load Streamline, so builds without the SDK never touch the disk.
-        StreamlineDistribution.provide(() -> {
-            StreamlineNativeExtractor.extract(SuperResolutionConstants.NATIVE_LIBRARIES_DIR.getPath());
-            if (VulkanPresentationFeature.shouldInitializeStreamline()){
-                return SuperResolutionConstants.NATIVE_LIBRARIES_DIR.getPath();
-            }
-            return null;
-        });
+        StreamlineDistribution.provide(() ->
+                StreamlineNativeExtractor.extract(SuperResolutionConstants.NATIVE_LIBRARIES_DIR.getPath()));
         WisteriaFrameGeneration.register();
         WisteriaLowLatency.register();
     }

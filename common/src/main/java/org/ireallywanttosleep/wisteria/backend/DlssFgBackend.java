@@ -53,8 +53,6 @@ public enum DlssFgBackend {
     }
 
     public static void save(DlssFgBackend backend) {
-        SuperResolutionConfig.setFrameGenerationBackend(
-                backend == null ? AUTO.configId : backend.configId
-        );
+        SuperResolutionConfig.setFrameGenerationBackend(backend.configId);
     }
 }
