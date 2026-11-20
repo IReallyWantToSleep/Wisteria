@@ -90,6 +90,15 @@ fun superResolutionModJar(): File? {
     return candidates.singleOrNull()
 }
 
+/**
+ * A local Iris jar that replaces the Modrinth one on the development runtime, for builds that
+ * are not published there. Super Resolution's Vulkan build on 26.3 needs the Iris 1.12
+ * render-backend snapshot. Set with -PirisJar=/absolute/path/to/iris.jar.
+ */
+fun localIrisJar(): File? = providers.gradleProperty("irisJar").orNull?.let { path ->
+    file(path).also { require(it.isFile) { "irisJar not found: $it" } }
+}
+
 fun superResolutionModrinthNotation(): String =
     "maven.modrinth:${cfg("sr_modrinth_project_id")}:${cfg("sr_modrinth_version_id_fabric")}"
 
@@ -111,8 +120,15 @@ dependencies {
         add(modRuntimeOnlyName(), superResolutionModrinthNotation())
     }
 
+    val localIris = localIrisJar()
     for (dependency in runtimeModrinthDependencies()) {
+        if (dependency.name == "iris" && localIris != null) {
+            continue
+        }
         add(modImplementationName(), fabricModrinthNotation(dependency))
+    }
+    if (localIris != null) {
+        add(modImplementationName(), files(localIris))
     }
 
     // Keep the shared output on the development runtime classpath as well. The loader jar

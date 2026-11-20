@@ -5,8 +5,8 @@ plugins {
     // Applied by the loader modules; declared here so its types are on the buildscript
     // classpath and the version is pinned in one place. The root project holds no
     // sources and produces no artifact.
-    id("net.neoforged.moddev") version "2.0.141" apply false
-    id("net.neoforged.moddev.legacyforge") version "2.0.141" apply false
+    id("net.neoforged.moddev") version "2.0.147" apply false
+    id("net.neoforged.moddev.legacyforge") version "2.0.147" apply false
     // Loom ships as two plugins: the plain one for unobfuscated Minecraft (26.1+) and the
     // remap one for older, obfuscated versions. Both are put on the buildscript classpath
     // here so the fabric module can apply whichever the selected version needs, rather
