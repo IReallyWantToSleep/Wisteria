@@ -259,9 +259,9 @@ final class StreamlineFrameGenerationAdapter {
             lastAppliedOptions = null;
             return desired.mode() == StreamlineTypes.DlssGMode.OFF;
         }
-        if (desired.equals(lastAppliedOptions)) {
-            return true;
-        }
+        //if (desired.equals(lastAppliedOptions)) {
+        //    return true;
+        //}
 
         StreamlineTypes.DlssGOptions options = new StreamlineTypes.DlssGOptions();
         options.mode = desired.mode();
